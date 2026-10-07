@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluation-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluation
+  template:
+    metadata:
+      labels:
+        app: evaluation
+    spec:
+      containers:
+      - name: evaluation-service
+        image: evaluation-service
+        ports:
+        - containerPort: 8004
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+        env:
+        - name: MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: MASTER_KEY
+        - name: AUTH_SERVICE_URL
+          value: "http://auth-service:8001"
+        - name: FLAG_SERVICE_URL
+          value: "http://flag-service:8002"
+        - name: TARGETING_SERVICE_URL
+          value: "http://targeting-service:8003"
+        - name: EVALUATION_SERVICE_URL
+          value: "http://evaluation-service:8004"
+        - name: REDIS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: REDIS_ENDPOINT
+        - name: REDIS_URL
+          value: "redis://$(REDIS_ENDPOINT):6379/0"
+        - name: AWS_SQS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: AWS_SQS_URL
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: AWS_REGION
+        - name: SERVICE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: SERVICE_API_KEY
+        - name: PORT
+          value: "8004"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: evaluation-service
+spec:
+  type: ClusterIP
+  selector:
+    app: evaluation
+  ports:
+  - protocol: TCP
+    port: 8004
+    targetPort: 8004

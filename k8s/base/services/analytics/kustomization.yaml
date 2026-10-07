@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- deployment.yaml
+- hpa.yaml
+images:
+- name: analytics-service
+  newName: analytics-service
+  newTag: a3314c9b45f62a4a2e527b09c8f575f996ccf432

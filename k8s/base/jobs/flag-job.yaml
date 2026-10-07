@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flag-db-init
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: postgres-init
+        image: postgres:15
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            export PGPASSWORD=$POSTGRES_PASSWORD
+            # Cria a database se não existir
+            psql -h $RDS_FLAG_ENDPOINT -U $POSTGRES_USER -d postgres -c "CREATE DATABASE flags_db;"
+            # Executa o script SQL na database
+            psql -h $RDS_FLAG_ENDPOINT -U $POSTGRES_USER -d flags_db -f /sql/init.sql
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-flag-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-flag-secret
+              key: password
+        - name: RDS_FLAG_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: RDS_FLAG_ENDPOINT
+        volumeMounts:
+        - name: sql
+          mountPath: /sql
+      volumes:
+      - name: sql
+        configMap:
+          name: flag-init-sql

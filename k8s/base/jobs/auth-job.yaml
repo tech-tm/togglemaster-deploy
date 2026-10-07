@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-db-init
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: postgres-init
+        image: postgres:15
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            export PGPASSWORD=$POSTGRES_PASSWORD
+            psql -h $RDS_AUTH_ENDPOINT -U $POSTGRES_USER -d postgres -c "CREATE DATABASE auth_db;"
+            psql -h $RDS_AUTH_ENDPOINT -U $POSTGRES_USER -d auth_db -f /sql/init.sql
+            
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-auth-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-auth-secret
+              key: password
+        - name: RDS_AUTH_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: RDS_AUTH_ENDPOINT
+        volumeMounts:
+        - name: sql
+          mountPath: /sql
+      volumes:
+      - name: sql
+        configMap:
+          name: auth-init-sql

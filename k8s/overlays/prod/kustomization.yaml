@@ -1,0 +1,78 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+
+patches:
+# ============================================================
+# PATCH GENÉRICO: aplica revisionHistoryLimit a TODOS os Deployments
+# ============================================================
+- target:
+    kind: Deployment
+  patch: |-
+    - op: add
+      path: /spec/revisionHistoryLimit
+      value: 2
+
+# ============================================================
+# PATCHES INDIVIDUAIS: replicas específicas por serviço
+# ============================================================
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+  target:
+    kind: Deployment
+    name: auth-service
+
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 2          # <-- pode ser diferente para cada serviço
+  target:
+    kind: Deployment
+    name: flag-service
+
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+  target:
+    kind: Deployment
+    name: targeting-service
+
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 3          # <-- evaluation pode ter mais réplicas
+  target:
+    kind: Deployment
+    name: evaluation-service
+
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+  target:
+    kind: Deployment
+    name: analytics-service
+
+# ============================================================
+# IMAGENS
+# ============================================================
+images:
+- name: analytics-service
+  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/analytics-service
+  newTag: e249f5bcc318c56364b8e44c559cb1513762823e
+- name: auth-service
+  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/auth-service
+  newTag: e249f5bcc318c56364b8e44c559cb1513762823e
+- name: evaluation-service
+  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/evaluation-service
+  newTag: e249f5bcc318c56364b8e44c559cb1513762823e
+- name: flag-service
+  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/flag-service
+  newTag: f9d5bbe3ce6e1d2671f2ecfa0cf765cb007e7e29
+- name: targeting-service
+  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/targeting-service
+  newTag: f9d5bbe3ce6e1d2671f2ecfa0cf765cb007e7e29

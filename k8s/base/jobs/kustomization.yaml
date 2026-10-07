@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Gera os ConfigMaps
+configMapGenerator:
+  - name: auth-init-sql
+    files:
+      - init.sql=sql/auth/init.sql
+  - name: flag-init-sql
+    files:
+      - init.sql=sql/flag/init.sql
+  - name: targeting-init-sql
+    files:
+      - init.sql=sql/targeting/init.sql
+
+# Lista os recursos dos Jobs
+resources:
+  - auth-job.yaml
+  - flag-job.yaml
+  - targeting-job.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true

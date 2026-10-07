@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics
+  template:
+    metadata:
+      labels:
+        app: analytics
+    spec:
+      containers:
+      - name: analytics-service
+        image: analytics-service
+        ports:
+        - containerPort: 8005
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8005
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8005
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+        env:
+        - name: AWS_SQS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: AWS_SQS_URL
+        - name: AWS_DYNAMODB_TABLE
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: AWS_DYNAMODB_TABLE
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: AWS_REGION
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+spec:
+  type: ClusterIP
+  selector:
+    app: analytics
+  ports:
+    - protocol: TCP
+      port: 8005
+      targetPort: 8005
