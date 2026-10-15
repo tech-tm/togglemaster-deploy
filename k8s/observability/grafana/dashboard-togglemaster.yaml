@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-togglemaster
+  namespace: observability
+  labels:
+    # Label que o sidecar de dashboards do Grafana procura para
+    # importar este dashboard automaticamente.
+    grafana_dashboard: "1"
+data:
+  togglemaster-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "graphTooltip": 0,
+      "title": "ToggleMaster - Visao Geral do Ecossistema",
+      "uid": "togglemaster-overview",
+      "tags": ["togglemaster", "fase-4", "observabilidade"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "type": "constant",
+            "query": "togglemaster",
+            "current": { "text": "togglemaster", "value": "togglemaster" },
+            "hide": 2
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Uso de Recursos do Cluster",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+        },
+        {
+          "type": "timeseries",
+          "title": "CPU por pod (namespace togglemaster)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\",container!=\"\",container!=\"POD\"}[5m])) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Memoria por pod (namespace togglemaster)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\",container!=\"\",container!=\"POD\"}) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Taxa de Requisicoes dos Microsservicos",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+        },
+        {
+          "type": "timeseries",
+          "title": "Requisicoes HTTP por servico (req/s)",
+          "description": "Baseado em metricas OTel/Prometheus (http.server.request.count / http_requests_total). Depende da instrumentacao dos microsservicos (Bloco 3).",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\"}[5m])) by (service_name)",
+              "legendFormat": "{{service_name}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Taxa de erros HTTP 5xx por servico",
+          "description": "Erros 5xx por servico. Util para o alerta inteligente (Bloco 4).",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\",http_response_status_code=~\"5..\"}[5m])) by (service_name)",
+              "legendFormat": "{{service_name}}"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Logs em Tempo Real (Loki)",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+        },
+        {
+          "type": "logs",
+          "title": "Logs dos microsservicos (namespace togglemaster)",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 19 },
+          "options": {
+            "showTime": true,
+            "showLabels": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"togglemaster\"}"
+            }
+          ]
+        }
+      ]
+    }

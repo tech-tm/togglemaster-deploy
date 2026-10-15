@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    targetRevision: 2.10.2
+    helm:
+      releaseName: loki-stack
+      values: |
+        # ----------------------------------------------------------------
+        # Loki: centraliza e indexa os logs de todos os conteineres.
+        # Modo single-binary com storage local (suficiente para o lab;
+        # para producao usar object storage S3).
+        # ----------------------------------------------------------------
+        loki:
+          enabled: true
+          persistence:
+            enabled: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+
+        # ----------------------------------------------------------------
+        # Promtail: roda como DaemonSet e envia os logs de cada pod do
+        # cluster para o Loki.
+        # ----------------------------------------------------------------
+        promtail:
+          enabled: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+
+        # Grafana proprio do loki-stack desativado: usamos o do
+        # kube-prometheus-stack como ferramenta unica de visualizacao.
+        grafana:
+          enabled: false
+        prometheus:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

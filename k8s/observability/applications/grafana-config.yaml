@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana-config
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # URL concreto: esta Application e lida diretamente pelo ArgoCD
+    # (via app-of-apps), que nao executa envsubst.
+    repoURL: https://github.com/tech-tm/togglemaster-deploy
+    targetRevision: deploy
+    path: k8s/observability/grafana
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

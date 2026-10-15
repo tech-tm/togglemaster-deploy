@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-loki
+  namespace: observability
+  labels:
+    # Label que o sidecar de datasources do Grafana procura para
+    # importar esta fonte de dados automaticamente.
+    grafana_datasource: "1"
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        # Service do Loki criado pelo chart loki-stack neste namespace.
+        url: http://loki-stack.observability.svc.cluster.local:3100
+        isDefault: false
+        jsonData:
+          maxLines: 1000

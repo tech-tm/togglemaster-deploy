@@ -1,0 +1,185 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-collector
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    targetRevision: 0.173.1
+    helm:
+      releaseName: otel-collector
+      values: |
+        # ----------------------------------------------------------------
+        # Imagem: contrib inclui exporters nao-core (datadog, loki, etc).
+        # ----------------------------------------------------------------
+        image:
+          repository: otel/opentelemetry-collector-contrib
+
+        # Deployment singleton: recebe OTLP dos microsservicos no cluster.
+        mode: deployment
+        replicaCount: 1
+
+        # Mantem os nomes modernos dos processors (k8sattributes em vez de
+        # k8s_attributes). Padrao do chart e `true`, que reescreve para os
+        # nomes antigos por compatibilidade; aqui preferimos consistencia
+        # com a nomenclatura atual do OpenTelemetry Collector.
+        rewriteDeprecatedComponentNames: false
+
+        # ----------------------------------------------------------------
+        # Preset: habilita o processor k8sattributes e cria o RBAC
+        # necessario (ServiceAccount + ClusterRole + ClusterRoleBinding)
+        # para que o collector possa enriquecer a telemetria com
+        # atributos do Kubernetes (pod name, namespace, deployment, etc.).
+        # ----------------------------------------------------------------
+        presets:
+          kubernetesAttributes:
+            enabled: true
+          # Promtail (Bloco 1) ja coleta logs de container; nao duplicar.
+          logsCollection:
+            enabled: false
+          # Nao precisamos de eventos do kubelet aqui.
+          kubernetesEvents:
+            enabled: false
+          hostMetrics:
+            enabled: false
+
+        # ----------------------------------------------------------------
+        # Variaveis de ambiente lidas do Secret criado pelo workflow
+        # datadog-secret-sync.yml (a partir do SSM Parameter Store).
+        # ----------------------------------------------------------------
+        extraEnvs:
+          - name: DD_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: datadog-secret
+                key: api-key
+          - name: DD_SITE
+            valueFrom:
+              secretKeyRef:
+                name: datadog-secret
+                key: site
+
+        # ----------------------------------------------------------------
+        # Service: expoe o endpoint OTLP (4317 gRPC / 4318 HTTP) e o
+        # endpoint /metrics do exporter prometheus (8889).
+        # ----------------------------------------------------------------
+        ports:
+          otlp:
+            enabled: true
+            containerPort: 4317
+            servicePort: 4317
+            protocol: TCP
+          otlp-http:
+            enabled: true
+            containerPort: 4318
+            servicePort: 4318
+            protocol: TCP
+          metrics:
+            enabled: true
+            containerPort: 8888
+            servicePort: 8888
+            protocol: TCP
+          prometheus:
+            enabled: true
+            containerPort: 8889
+            servicePort: 8889
+            protocol: TCP
+
+        # ----------------------------------------------------------------
+        # ServiceMonitor: o Prometheus (kube-prometheus-stack) descobre
+        # automaticamente e faz scrape de /metrics do exporter prometheus
+        # (porta 8889) e das metricas internas do collector (porta 8888).
+        # ----------------------------------------------------------------
+        serviceMonitor:
+          enabled: true
+          extraLabels:
+            release: kube-prometheus-stack
+
+        # ----------------------------------------------------------------
+        # Configuracao do pipeline OTel.
+        # ----------------------------------------------------------------
+        config:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+
+          processors:
+            # Protecao contra OOM: dropa dados se o collector passar do limite.
+            memory_limiter:
+              check_interval: 1s
+              limit_mib: 400
+              spike_limit_mib: 100
+            # Agrupa dados em lotes para reduzir chamadas aos exporters.
+            batch:
+              send_batch_size: 1024
+              timeout: 10s
+            # Adiciona atributos globais (ambiente, cluster).
+            resource:
+              attributes:
+                - key: deployment.environment
+                  value: prod
+                  action: upsert
+                - key: k8s.cluster.name
+                  value: togglemaster-eks
+                  action: upsert
+
+          exporters:
+            # Envia traces, metricas e logs para o Datadog (APM do Bloco 3).
+            datadog:
+              api:
+                key: ${env:DD_API_KEY}
+                site: ${env:DD_SITE}
+              # Marca os dados como vindos do collector OTel.
+              hostname_source: config_or_system
+            # Expoe /metrics em :8889 para o Prometheus fazer scrape.
+            prometheus:
+              endpoint: 0.0.0.0:8889
+              resource_to_telemetry_conversion:
+                enabled: true
+            # Util para debug durante a demonstracao; comentar em producao.
+            debug:
+              verbosity: basic
+
+          service:
+            telemetry:
+              metrics:
+                address: 0.0.0.0:8888
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, resource, batch]
+                exporters: [datadog]
+              metrics:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, resource, batch]
+                exporters: [datadog, prometheus]
+              logs:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, resource, batch]
+                exporters: [datadog]
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

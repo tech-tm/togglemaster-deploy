@@ -63,3 +63,8 @@ jobs:
         run: |
           export REPO_URL="https://github.com/${{ github.repository }}"
           envsubst < k8s/application.yaml | kubectl apply -f -
+
+      - name: apply Observability (App of Apps)
+        run: |
+          export REPO_URL="https://github.com/${{ github.repository }}"
+          envsubst < k8s/observability/app-of-apps.yaml | kubectl apply -f -

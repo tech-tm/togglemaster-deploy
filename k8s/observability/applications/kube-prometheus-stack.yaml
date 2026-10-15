@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 65.1.1
+    helm:
+      releaseName: kube-prometheus-stack
+      values: |
+        # ----------------------------------------------------------------
+        # Prometheus: coleta e armazena as metricas de infraestrutura.
+        # ----------------------------------------------------------------
+        prometheus:
+          prometheusSpec:
+            retention: 7d
+            # Descobre automaticamente ServiceMonitors/PodMonitors de
+            # qualquer namespace (inclusive os microsservicos no
+            # namespace togglemaster), sem exigir label especifico.
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+
+        # ----------------------------------------------------------------
+        # Grafana: ferramenta principal de visualizacao.
+        # ----------------------------------------------------------------
+        grafana:
+          enabled: true
+          adminPassword: "togglemaster"   # trocar via secret em producao
+          # O sidecar varre ConfigMaps/Secrets com os labels abaixo e
+          # importa dashboards e datasources automaticamente.
+          sidecar:
+            dashboards:
+              enabled: true
+              label: grafana_dashboard
+              labelValue: "1"
+              searchNamespace: ALL
+            datasources:
+              enabled: true
+              label: grafana_datasource
+              labelValue: "1"
+              searchNamespace: ALL
+              # Fixa o UID do datasource Prometheus default para que os
+              # dashboards provisionados o referenciem de forma estavel.
+              defaultDatasourceEnabled: true
+              uid: prometheus
+          service:
+            type: ClusterIP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+        # ----------------------------------------------------------------
+        # Ajustes para o AWS Academy / EKS LabRole:
+        # desativa componentes que dependem de acesso ao control plane
+        # gerenciado (nao acessivel no EKS) para evitar alertas falsos.
+        # ----------------------------------------------------------------
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
