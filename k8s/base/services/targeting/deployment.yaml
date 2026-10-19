@@ -59,6 +59,29 @@ spec:
           value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(RDS_TARGETING_ENDPOINT):5432/targeting_db"
         - name: AUTH_SERVICE_URL
           value: "http://auth-service:8001"
+        # ---------- OpenTelemetry (Fase 4 - Bloco 3) ----------
+        - name: OTEL_SERVICE_NAME
+          value: "targeting-service"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_PROTOCOL
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_RESOURCE_ATTRIBUTES
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
+        - name: OTEL_PYTHON_LOG_CORRELATION
+          value: "true"
+        # ------------------------------------------------------
         - name: PORT
           value: "8003"
 ---

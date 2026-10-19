@@ -62,6 +62,25 @@ spec:
             secretKeyRef:
               name: togglemaster-secrets
               key: MASTER_KEY
+        # ---------- OpenTelemetry (Fase 4 - Bloco 3) ----------
+        - name: OTEL_SERVICE_NAME
+          value: "auth-service"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_PROTOCOL
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_RESOURCE_ATTRIBUTES
+        # ------------------------------------------------------
         - name: PORT
           value: "8001"
 ---

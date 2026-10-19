@@ -62,6 +62,10 @@ jobs:
 
       - name: Create or update ConfigMap with real values
         run: |
+          # Endpoint do OTel Collector (Fase 4 - Bloco 2), namespace observability.
+          # Service DNS: <release-name>-opentelemetry-collector.<ns>.svc.cluster.local
+          OTEL_ENDPOINT="http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318"
+
           kubectl create configmap togglemaster-config -n togglemaster \
             --from-literal=RDS_AUTH_ENDPOINT="$RDS_AUTH_ENDPOINT" \
             --from-literal=RDS_FLAG_ENDPOINT="$RDS_FLAG_ENDPOINT" \
@@ -70,6 +74,9 @@ jobs:
             --from-literal=AWS_REGION="$AWS_REGION" \
             --from-literal=AWS_SQS_URL="https://sqs.$AWS_REGION.amazonaws.com/$AWS_ACCOUNT_ID/togglemaster-evaluation-events" \
             --from-literal=AWS_DYNAMODB_TABLE="ToggleMasterAnalytics" \
+            --from-literal=OTEL_EXPORTER_OTLP_ENDPOINT="$OTEL_ENDPOINT" \
+            --from-literal=OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \
+            --from-literal=OTEL_RESOURCE_ATTRIBUTES="deployment.environment=prod" \
             --dry-run=client -o yaml | kubectl apply -f -
           
       - name: Restart deployments (if exist)

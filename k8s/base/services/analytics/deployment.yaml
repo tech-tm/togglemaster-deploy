@@ -52,6 +52,29 @@ spec:
             configMapKeyRef:
               name: togglemaster-config
               key: AWS_REGION
+        # ---------- OpenTelemetry (Fase 4 - Bloco 3) ----------
+        - name: OTEL_SERVICE_NAME
+          value: "analytics-service"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_EXPORTER_OTLP_PROTOCOL
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          valueFrom:
+            configMapKeyRef:
+              name: togglemaster-config
+              key: OTEL_RESOURCE_ATTRIBUTES
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
+        - name: OTEL_PYTHON_LOG_CORRELATION
+          value: "true"
+        # ------------------------------------------------------
 ---
 apiVersion: v1
 kind: Service
