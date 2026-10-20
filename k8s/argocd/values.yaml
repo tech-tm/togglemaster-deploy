@@ -1,0 +1,44 @@
+# ----------------------------------------------------------------------
+# Helm values para o chart argo-cd (instalacao via argocd-install.yml).
+#
+# Alem da configuracao padrao do servidor (LoadBalancer + insecure para o
+# AWS Academy), este arquivo adiciona ignoreDifferences GLOBAIS no
+# ConfigMap argocd-cm, cobrindo campos de .status gerados pelo controlador
+# do Kubernetes que a biblioteca de diff do ArgoCD ainda nao conhece.
+#
+# Erros tipicos corrigidos aqui:
+#   "field not declared in schema" para:
+#     - .status.terminatingReplicas  (k8s 1.33+, feature
+#        gate DeploymentReplicaSetTerminatingReplicas)
+#
+# Sao campos computados pelo controller — ignorar diferenca neles e
+# seguro: ninguem os coloca manualmente no Git.
+# ----------------------------------------------------------------------
+
+server:
+  service:
+    type: LoadBalancer
+  extraArgs:
+    - --insecure
+
+configs:
+  params:
+    server.insecure: true
+
+  cm:
+    # Ignora campos novos de .status em recursos core do apps/v1.
+    # O formato <group>_<Kind> e exigido pelo argocd-cm.
+    resource.customizations.ignoreDifferences.apps_Deployment: |
+      jsonPointers:
+      - /status/terminatingReplicas
+    resource.customizations.ignoreDifferences.apps_StatefulSet: |
+      jsonPointers:
+      - /status/terminatingReplicas
+    resource.customizations.ignoreDifferences.apps_ReplicaSet: |
+      jsonPointers:
+      - /status/terminatingReplicas
+    # DaemonSet nao traz terminatingReplicas hoje, mas acrescentamos
+    # defensivamente caso o campo seja introduzido em versoes futuras.
+    resource.customizations.ignoreDifferences.apps_DaemonSet: |
+      jsonPointers:
+      - /status/terminatingReplicas

@@ -48,12 +48,15 @@ jobs:
           helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
           helm repo update
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          # Values em k8s/argocd/values.yaml incluem:
+          #   - LoadBalancer + modo insecure (AWS Academy)
+          #   - ignoreDifferences globais para campos novos do k8s 1.33+
+          #     (ex: .status.terminatingReplicas) que o diff do ArgoCD
+          #     ainda nao conhece.
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --version 7.8.0 \
-            --set server.service.type=LoadBalancer \
-            --set server.extraArgs[0]=--insecure \
-            --set configs.params."server\.insecure"=true \
+            -f k8s/argocd/values.yaml \
             --wait
 
       - name: Create namespace togglemaster
