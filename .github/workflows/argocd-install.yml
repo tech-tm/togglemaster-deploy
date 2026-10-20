@@ -45,7 +45,8 @@ jobs:
 
       - name: Install ArgoCD via Helm
         run: |
-          helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true         helm repo update
+          helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
+          helm repo update
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
@@ -64,7 +65,10 @@ jobs:
           export REPO_URL="https://github.com/${{ github.repository }}"
           envsubst < k8s/application.yaml | kubectl apply -f -
 
-      - name: apply Observability (App of Apps)
-        run: |
-          export REPO_URL="https://github.com/${{ github.repository }}"
-          envsubst < k8s/observability/app-of-apps.yaml | kubectl apply -f -
+      # ----------------------------------------------------------------
+      # A stack de observabilidade NAO e aplicada aqui.
+      # Para subir Prometheus/Grafana/Loki/OTel Collector, rode o workflow
+      # dedicado "Observability Deploy" (observability-deploy.yml) apos
+      # a instalacao do ArgoCD. Esse workflow tem steps granulares com
+      # feedback de progresso e pode ser re-executado isoladamente.
+      # ----------------------------------------------------------------

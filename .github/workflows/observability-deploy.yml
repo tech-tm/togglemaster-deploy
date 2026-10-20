@@ -1,0 +1,296 @@
+name: Observability Deploy
+
+# ----------------------------------------------------------------------
+# Deploy independente da stack de observabilidade (Blocos 1 e 2 - Fase 4):
+#
+#   Bloco 1 - Monitoramento open source:
+#     * kube-prometheus-stack  (Prometheus + Grafana)
+#     * loki-stack             (Loki + Promtail)
+#     * grafana-config         (datasource Loki + dashboard customizado)
+#
+#   Bloco 2 - OpenTelemetry:
+#     * otel-collector         (recebe OTLP e exporta p/ Prometheus + Datadog)
+#
+# Este workflow NAO instala ArgoCD. Pre-requisito: ArgoCD ja esta instalado
+# no cluster (via workflow 'Install ArgoCD'). Aqui apenas aplicamos o
+# App-of-Apps que cria as Applications filhas e aguardamos cada uma
+# sincronizar, com steps granulares para que falhas sejam visiveis.
+#
+# E seguro rodar quantas vezes forem necessarias (todas as operacoes
+# sao idempotentes).
+# ----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait_timeout_seconds:
+        description: 'Timeout por Application (segundos)'
+        required: false
+        default: '600'
+        type: string
+      skip_health_checks:
+        description: 'Pular health checks dos pods (apenas aplica manifests)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  OBSERVABILITY_NAMESPACE: observability
+  ARGOCD_NAMESPACE: argocd
+
+jobs:
+  deploy:
+    name: Deploy Observability Stack
+    runs-on: ubuntu-latest
+    steps:
+      # ================================================================
+      # Setup basico
+      # ================================================================
+      - name: Checkout (branch deploy)
+        uses: actions/checkout@v4
+        with:
+          ref: deploy
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve cluster name from SSM
+        run: |
+          CLUSTER_NAME=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/cluster-name" \
+            --query "Parameter.Value" --output text)
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "Cluster alvo: $CLUSTER_NAME"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+          kubectl version --short 2>/dev/null || kubectl version --client
+
+      # ================================================================
+      # Preflight: cluster acessivel e ArgoCD instalado
+      # ================================================================
+      - name: Preflight / cluster acessivel
+        run: |
+          echo "--- Nodes do cluster ---"
+          kubectl get nodes
+          echo
+          echo "--- Server version ---"
+          kubectl version 2>/dev/null | grep -E "Server|Client" || true
+
+      - name: Preflight / ArgoCD instalado
+        run: |
+          if ! kubectl get ns "$ARGOCD_NAMESPACE" >/dev/null 2>&1; then
+            echo "::error::Namespace '$ARGOCD_NAMESPACE' nao existe."
+            echo "Rode primeiro o workflow 'Install ArgoCD' antes deste."
+            exit 1
+          fi
+
+          echo "--- Pods do ArgoCD ---"
+          kubectl get pods -n "$ARGOCD_NAMESPACE"
+
+          # Verifica o controller principal; se nao estiver pronto, o
+          # ArgoCD nao vai conseguir reconciliar as Applications.
+          if ! kubectl wait --for=condition=available \
+                --timeout=120s \
+                deployment/argocd-server -n "$ARGOCD_NAMESPACE" 2>&1; then
+            echo "::error::argocd-server nao esta disponivel."
+            exit 1
+          fi
+          echo "✓ ArgoCD disponivel."
+
+      # ================================================================
+      # Namespace observability
+      # ================================================================
+      - name: Namespace observability (criar se necessario)
+        run: |
+          kubectl apply -f k8s/observability/namespace.yaml
+          kubectl get ns "$OBSERVABILITY_NAMESPACE" -o yaml | head -10
+
+      # ================================================================
+      # Aplica App-of-Apps
+      # ================================================================
+      - name: Aplicar App-of-Apps da observabilidade
+        run: |
+          export REPO_URL="https://github.com/${{ github.repository }}"
+          echo "REPO_URL=$REPO_URL"
+          envsubst < k8s/observability/app-of-apps.yaml | tee /tmp/app-of-apps-rendered.yaml
+          kubectl apply -f /tmp/app-of-apps-rendered.yaml
+
+      - name: Aguardar App-of-Apps aparecer no ArgoCD
+        run: |
+          for i in $(seq 1 30); do
+            if kubectl get application observability -n "$ARGOCD_NAMESPACE" >/dev/null 2>&1; then
+              echo "✓ Application 'observability' presente."
+              break
+            fi
+            echo "Aguardando Application 'observability' aparecer... (${i}/30)"
+            sleep 5
+          done
+          kubectl get application observability -n "$ARGOCD_NAMESPACE" \
+            -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status'
+
+      # ================================================================
+      # Define a funcao de espera e exporta como script reutilizavel
+      # ================================================================
+      - name: Setup / funcao wait_app
+        run: |
+          cat > /tmp/wait_app.sh <<'EOF'
+          #!/usr/bin/env bash
+          # Uso: wait_app <nome-da-Application> <timeout-segundos>
+          set -eo pipefail
+          APP="$1"
+          TIMEOUT="${2:-600}"
+          NS="argocd"
+          ELAPSED=0
+          STEP=10
+
+          echo "=== Aguardando '$APP' sincronizar (timeout ${TIMEOUT}s) ==="
+
+          # Espera a Application aparecer
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            if kubectl get application "$APP" -n "$NS" >/dev/null 2>&1; then
+              break
+            fi
+            echo "  [$APP] Application ainda nao existe (${ELAPSED}s)"
+            sleep $STEP
+            ELAPSED=$((ELAPSED + STEP))
+          done
+
+          # Espera sync Synced + health Healthy
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            SYNC=$(kubectl get application "$APP" -n "$NS" \
+              -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH=$(kubectl get application "$APP" -n "$NS" \
+              -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+            printf '  [%s] sync=%-10s health=%-10s (%ss/%ss)\n' \
+              "$APP" "$SYNC" "$HEALTH" "$ELAPSED" "$TIMEOUT"
+            if [ "$SYNC" = "Synced" ] && [ "$HEALTH" = "Healthy" ]; then
+              echo "✓ '$APP' Synced e Healthy."
+              exit 0
+            fi
+            sleep $STEP
+            ELAPSED=$((ELAPSED + STEP))
+          done
+
+          echo "::error::'$APP' nao ficou Synced+Healthy em ${TIMEOUT}s"
+          echo "--- describe application ---"
+          kubectl describe application "$APP" -n "$NS" | tail -60 || true
+          echo "--- eventos recentes no namespace observability ---"
+          kubectl get events -n observability --sort-by='.lastTimestamp' | tail -20 || true
+          exit 1
+          EOF
+          chmod +x /tmp/wait_app.sh
+          echo "wait_app helper pronto em /tmp/wait_app.sh"
+
+      # ================================================================
+      # Wait sync de cada Application filha
+      # ================================================================
+      - name: Aguardar kube-prometheus-stack (Prometheus + Grafana)
+        run: /tmp/wait_app.sh kube-prometheus-stack ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Aguardar loki-stack (Loki + Promtail)
+        run: /tmp/wait_app.sh loki-stack ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Aguardar grafana-config (datasource Loki + dashboard)
+        run: /tmp/wait_app.sh grafana-config ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Aguardar otel-collector
+        # OTel Collector pode ficar "Degraded" se o secret 'datadog-secret'
+        # ainda nao foi criado (CreateContainerConfigError no pod). Nao
+        # falha o workflow aqui; apenas informa.
+        continue-on-error: true
+        run: /tmp/wait_app.sh otel-collector ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Checar secret datadog-secret (necessario pelo OTel Collector)
+        run: |
+          if kubectl get secret datadog-secret -n "$OBSERVABILITY_NAMESPACE" >/dev/null 2>&1; then
+            echo "✓ Secret datadog-secret existe."
+          else
+            echo "::warning::Secret 'datadog-secret' nao existe no namespace observability."
+            echo "O OTel Collector ficara em CreateContainerConfigError ate que"
+            echo "voce rode o workflow 'Sync Datadog Secret from SSM'."
+            echo
+            echo "Antes de rodar aquele workflow, garanta que estes parametros"
+            echo "existem no AWS SSM:"
+            echo "  /togglemaster/prod/datadog/api-key  (SecureString, obrigatorio)"
+            echo "  /togglemaster/prod/datadog/site     (String, opcional, default datadoghq.com)"
+          fi
+
+      # ================================================================
+      # Health checks dos pods
+      # ================================================================
+      - name: Health check / pods em observability
+        if: ${{ !inputs.skip_health_checks }}
+        run: |
+          echo "--- Pods ---"
+          kubectl get pods -n "$OBSERVABILITY_NAMESPACE" -o wide
+
+          echo
+          echo "--- Pods nao-Running (problema potencial) ---"
+          NOT_READY=$(kubectl get pods -n "$OBSERVABILITY_NAMESPACE" \
+            --field-selector=status.phase!=Running \
+            --no-headers 2>/dev/null | wc -l)
+          if [ "$NOT_READY" -gt 0 ]; then
+            kubectl get pods -n "$OBSERVABILITY_NAMESPACE" \
+              --field-selector=status.phase!=Running
+            echo
+            echo "::warning::$NOT_READY pod(s) nao estao Running."
+            echo "Alguns componentes podem demorar para subir ou dependem"
+            echo "de secrets externos (ver passo anterior sobre datadog-secret)."
+          else
+            echo "✓ Todos os pods estao Running."
+          fi
+
+      - name: Health check / services expostos
+        if: ${{ !inputs.skip_health_checks }}
+        run: |
+          echo "--- Services do namespace observability ---"
+          kubectl get svc -n "$OBSERVABILITY_NAMESPACE"
+
+      # ================================================================
+      # Summary final: endpoints, DNS internos, proximos passos
+      # ================================================================
+      - name: Resumo final
+        if: always()
+        run: |
+          echo "============================================================"
+          echo "  Observability Stack - Deploy Summary"
+          echo "============================================================"
+          echo
+          echo "## Applications no ArgoCD (namespace argocd)"
+          kubectl get applications -n "$ARGOCD_NAMESPACE" \
+            -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status' \
+            2>/dev/null || true
+          echo
+          echo "## Service DNS interno (para microsservicos consumirem)"
+          echo "OTel Collector OTLP gRPC : otel-collector-opentelemetry-collector.observability.svc.cluster.local:4317"
+          echo "OTel Collector OTLP HTTP : otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318"
+          echo "Prometheus (scrape UI)   : kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090"
+          echo "Grafana (web UI)         : kube-prometheus-stack-grafana.observability.svc.cluster.local:80"
+          echo "Loki                     : loki-stack.observability.svc.cluster.local:3100"
+          echo
+          echo "## Acesso ao Grafana (localmente)"
+          echo "  kubectl port-forward -n observability svc/kube-prometheus-stack-grafana 3000:80"
+          echo "  Abrir http://localhost:3000 (user: admin / password: togglemaster)"
+          echo
+          echo "## Proximos passos"
+          echo "1. Se o OTel Collector esta Degraded, rode o workflow"
+          echo "   'Sync Datadog Secret from SSM' (apos criar os parametros SSM)."
+          echo "2. Rode o workflow 'GitOps' (push na branch deploy) para"
+          echo "   atualizar o ConfigMap togglemaster-config com as envs OTEL_*"
+          echo "   e disparar o rollout restart dos microsservicos (Bloco 3)."
+          echo
+          echo "============================================================"
