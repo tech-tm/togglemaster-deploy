@@ -1,0 +1,181 @@
+name: Self-Healing Rollout
+
+# ----------------------------------------------------------------------
+# Automacao de self-healing acionada por alertas do Datadog (ou manual).
+#
+# Fluxo:
+#   Datadog Monitor dispara -> webhook @webhook-togglemaster-self-healing
+#   -> GitHub repository_dispatch (event_type: datadog-alert)
+#   -> este workflow faz 'kubectl rollout restart' no servico afetado.
+#
+# Payload esperado do Datadog (configurado no webhook):
+#   {
+#     "event_type": "datadog-alert",
+#     "client_payload": {
+#       "service": "auth-service",
+#       "alert_name": "...",
+#       "alert_url":  "...",
+#       "alert_id":   "..."
+#     }
+#   }
+#
+# Seguranca:
+#   - Whitelist dos 5 servicos conhecidos (nao executa em nomes arbitrarios).
+#   - Namespace fixo em 'togglemaster'.
+# ----------------------------------------------------------------------
+
+on:
+  repository_dispatch:
+    types: [datadog-alert]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Nome do serviço (whitelist: auth, flag, targeting, evaluation, analytics)'
+        required: true
+        default: 'auth-service'
+      alert_url:
+        description: 'URL do alerta (opcional, apenas para rastreio)'
+        required: false
+        default: 'manual-run'
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  NAMESPACE: togglemaster
+
+jobs:
+  restart:
+    name: Rollout Restart Deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extrair contexto do alerta
+        id: ctx
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            SVC="${{ github.event.client_payload.service }}"
+            URL="${{ github.event.client_payload.alert_url }}"
+            NAME="${{ github.event.client_payload.alert_name }}"
+            TRIGGER="datadog-webhook"
+          else
+            SVC="${{ github.event.inputs.service }}"
+            URL="${{ github.event.inputs.alert_url }}"
+            NAME="manual"
+            TRIGGER="manual"
+          fi
+
+          echo "service=$SVC"       >> $GITHUB_OUTPUT
+          echo "alert_url=$URL"     >> $GITHUB_OUTPUT
+          echo "alert_name=$NAME"   >> $GITHUB_OUTPUT
+          echo "trigger=$TRIGGER"   >> $GITHUB_OUTPUT
+
+          echo "--- Contexto ---"
+          echo "service    : $SVC"
+          echo "alert_name : $NAME"
+          echo "alert_url  : $URL"
+          echo "trigger    : $TRIGGER"
+
+      - name: Validar servico contra whitelist
+        run: |
+          ALLOWED="auth-service flag-service targeting-service evaluation-service analytics-service"
+          SVC="${{ steps.ctx.outputs.service }}"
+
+          if [ -z "$SVC" ]; then
+            echo "::error::Nome do servico nao recebido no payload."
+            exit 1
+          fi
+
+          # grep -w para matching exato (evita 'auth' match 'auth-service')
+          if ! echo "$ALLOWED" | tr ' ' '\n' | grep -Fxq "$SVC"; then
+            echo "::error::Servico '$SVC' nao esta na whitelist."
+            echo "Permitidos: $ALLOWED"
+            exit 1
+          fi
+
+          echo "✓ Servico '$SVC' validado."
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve cluster name from SSM
+        run: |
+          CLUSTER_NAME=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/cluster-name" \
+            --query "Parameter.Value" --output text)
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+      - name: Estado anterior do deployment
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          echo "--- Deployment antes do restart ---"
+          kubectl get deployment "$SVC" -n "$NAMESPACE" -o wide
+          echo
+          echo "--- Pods ---"
+          kubectl get pods -n "$NAMESPACE" -l app="${SVC%-service}" -o wide
+
+      - name: Rollout restart
+        id: restart
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          echo "Reiniciando deployment '$SVC' no namespace '$NAMESPACE'..."
+          kubectl rollout restart deployment "$SVC" -n "$NAMESPACE"
+          echo "restarted_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+      - name: Aguardar rollout completar
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          echo "Aguardando rollout de '$SVC' concluir (timeout 5min)..."
+          kubectl rollout status deployment "$SVC" -n "$NAMESPACE" --timeout=5m
+
+      - name: Estado posterior do deployment
+        if: always()
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          echo "--- Deployment depois do restart ---"
+          kubectl get deployment "$SVC" -n "$NAMESPACE" -o wide
+          echo
+          echo "--- Pods ---"
+          kubectl get pods -n "$NAMESPACE" -l app="${SVC%-service}" -o wide
+
+      - name: Resumo final
+        if: always()
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          STATUS="${{ job.status }}"
+          [ "$STATUS" = "success" ] && EMOJI="✅" || EMOJI="❌"
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          # $EMOJI Self-Healing — $SVC
+
+          | Campo | Valor |
+          |---|---|
+          | Serviço | \`$SVC\` |
+          | Namespace | \`$NAMESPACE\` |
+          | Trigger | ${{ steps.ctx.outputs.trigger }} |
+          | Alerta | ${{ steps.ctx.outputs.alert_name }} |
+          | URL do alerta | ${{ steps.ctx.outputs.alert_url }} |
+          | Reiniciado em | ${{ steps.restart.outputs.restarted_at }} |
+          | Status do rollout | $STATUS |
+
+          ## Ação executada
+          \`\`\`
+          kubectl rollout restart deployment $SVC -n $NAMESPACE
+          \`\`\`
+
+          ## Próximos passos
+          - Validar no Datadog APM se a taxa de 5xx voltou ao normal (~5min).
+          - Se o alerta persistir após o restart, investigar causa raiz
+            (logs do serviço, status do RDS/Redis, etc.).
+          EOF

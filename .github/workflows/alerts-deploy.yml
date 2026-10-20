@@ -1,0 +1,198 @@
+name: Alerts Deploy
+
+# ----------------------------------------------------------------------
+# Aplica (cria ou atualiza) os monitores no Datadog a partir dos
+# payloads JSON versionados em alerts/datadog/.
+#
+# Operacao idempotente: busca o monitor pelo campo 'name'; se existir,
+# faz PUT (update); se nao, POST (create).
+#
+# Pre-requisitos (SSM):
+#   /togglemaster/prod/datadog/api-key   (SecureString, obrigatorio)
+#   /togglemaster/prod/datadog/app-key   (SecureString, obrigatorio)
+#   /togglemaster/prod/datadog/site      (String, opcional, default: datadoghq.com)
+# ----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      threshold_percent:
+        description: 'Threshold de erros 5xx (percentual critical)'
+        required: false
+        default: '5'
+      warning_percent:
+        description: 'Threshold warning (percentual)'
+        required: false
+        default: '3'
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  deploy_monitor:
+    name: Apply Datadog Monitor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (branch deploy)
+        uses: actions/checkout@v4
+        with:
+          ref: deploy
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Buscar credenciais do Datadog no SSM
+        run: |
+          DD_API_KEY=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/datadog/api-key" \
+            --with-decryption --query "Parameter.Value" --output text)
+          DD_APP_KEY=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/datadog/app-key" \
+            --with-decryption --query "Parameter.Value" --output text)
+          DD_SITE=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/datadog/site" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "datadoghq.com")
+
+          # Mascara nos logs para nao vazarem
+          echo "::add-mask::$DD_API_KEY"
+          echo "::add-mask::$DD_APP_KEY"
+
+          echo "DD_API_KEY=$DD_API_KEY" >> $GITHUB_ENV
+          echo "DD_APP_KEY=$DD_APP_KEY" >> $GITHUB_ENV
+          echo "DD_SITE=$DD_SITE" >> $GITHUB_ENV
+          echo "✓ Credenciais Datadog carregadas (site=$DD_SITE)"
+
+      - name: Preparar payload do monitor
+        run: |
+          export THRESHOLD_PERCENT="${{ inputs.threshold_percent }}"
+          export WARNING_PERCENT="${{ inputs.warning_percent }}"
+
+          # envsubst nao suporta aspas em numeros JSON, entao usamos sed
+          # para substituir os placeholders no template, e depois convertemos
+          # os campos de threshold para numeros (sem aspas).
+          envsubst < alerts/datadog/monitor-5xx-auth.json > /tmp/monitor.json
+
+          # Converte "critical": "5" para "critical": 5 (numero)
+          python3 -c "
+          import json
+          with open('/tmp/monitor.json') as f:
+              m = json.load(f)
+          th = m['options']['thresholds']
+          th['critical'] = float(th['critical'])
+          th['warning']  = float(th['warning'])
+          with open('/tmp/monitor.json', 'w') as f:
+              json.dump(m, f, indent=2)
+          "
+
+          echo '--- Payload final ---'
+          cat /tmp/monitor.json
+
+      - name: Procurar monitor existente pelo nome
+        id: find
+        run: |
+          NAME=$(python3 -c "import json; print(json.load(open('/tmp/monitor.json'))['name'])")
+          echo "Buscando monitor: $NAME"
+
+          # Lista monitores filtrando pelo nome (API aceita 'name' como filtro parcial)
+          RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.$DD_SITE/api/v1/monitor?name=${NAME// /%20}" \
+            -H "DD-API-KEY: $DD_API_KEY" \
+            -H "DD-APPLICATION-KEY: $DD_APP_KEY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::GET monitor retornou HTTP $HTTP_CODE"
+            echo "$BODY"
+            exit 1
+          fi
+
+          # Procura match exato pelo campo 'name'
+          MONITOR_ID=$(echo "$BODY" | python3 -c "
+          import json, sys, os
+          target = os.environ['NAME']
+          data = json.load(sys.stdin)
+          matches = [m for m in data if m.get('name') == target]
+          print(matches[0]['id'] if matches else '')
+          " NAME="$NAME")
+
+          if [ -n "$MONITOR_ID" ]; then
+            echo "✓ Monitor existente encontrado: ID $MONITOR_ID"
+            echo "monitor_id=$MONITOR_ID" >> $GITHUB_OUTPUT
+          else
+            echo "✓ Nenhum monitor existente com esse nome; sera criado."
+            echo "monitor_id=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Criar ou atualizar monitor
+        id: apply
+        run: |
+          MONITOR_ID="${{ steps.find.outputs.monitor_id }}"
+
+          if [ -n "$MONITOR_ID" ]; then
+            echo "→ Atualizando monitor $MONITOR_ID (PUT)"
+            METHOD="PUT"
+            URL="https://api.$DD_SITE/api/v1/monitor/$MONITOR_ID"
+          else
+            echo "→ Criando novo monitor (POST)"
+            METHOD="POST"
+            URL="https://api.$DD_SITE/api/v1/monitor"
+          fi
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X "$METHOD" "$URL" \
+            -H "DD-API-KEY: $DD_API_KEY" \
+            -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/monitor.json)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "::error::$METHOD monitor retornou HTTP $HTTP_CODE"
+            echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            exit 1
+          fi
+
+          FINAL_ID=$(echo "$BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          echo "✓ Monitor aplicado: ID $FINAL_ID"
+          echo "monitor_id=$FINAL_ID" >> $GITHUB_OUTPUT
+
+      - name: Resumo
+        if: always()
+        run: |
+          ID="${{ steps.apply.outputs.monitor_id }}"
+          if [ -z "$ID" ]; then
+            echo "## Alerts Deploy — FALHOU" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          # Alerts Deploy — OK
+
+          | Campo | Valor |
+          |---|---|
+          | Monitor ID | $ID |
+          | URL | https://app.$DD_SITE/monitors/$ID |
+          | Threshold critical | ${{ inputs.threshold_percent }}% |
+          | Threshold warning  | ${{ inputs.warning_percent }}% |
+
+          ## Próximos passos
+
+          - Configure as integrações **@opsgenie-togglemaster** e
+            **@webhook-togglemaster-self-healing** no painel do Datadog
+            (ver \`docs/alerting.md\`), caso ainda não existam.
+          - Para testar sem causar incidente real, use o botão
+            **"Resolve"** → **"Trigger"** no próprio monitor.
+          EOF

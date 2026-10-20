@@ -10,13 +10,15 @@ exceto o `GitOps` que roda automaticamente a cada push na branch `deploy`.
 
 ## Visão geral dos workflows
 
-| Workflow | Arquivo | Trigger | Papel |
-|---|---|---|---|
-| **Install ArgoCD** | `argocd-install.yml` | manual | Instala o ArgoCD no cluster e aplica a Application dos microsserviços |
-| **Observability Deploy** | `observability-deploy.yml` | manual | Sobe a stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) via App-of-Apps |
-| **Sync Datadog Secret from SSM** | `datadog-secret-sync.yml` | manual | Cria o Secret `datadog-secret` no namespace `observability` a partir do SSM |
-| **GitOps** | `gitops.yml` | push em `deploy` ou manual | Cria/atualiza o `togglemaster-config` ConfigMap, aplica db-init jobs, dá rollout restart nos deployments |
-| **Sync Kubernetes Secrets from SSM** | `secrets-sync.yml` | `workflow_call` | Reutilizável, chamado pelo `GitOps` para sincronizar secrets de banco/redis |
+| Workflow | Arquivo | Trigger | Papel | Bloco Fase 4 |
+|---|---|---|---|---|
+| **Install ArgoCD** | `argocd-install.yml` | manual | Instala o ArgoCD no cluster e aplica a Application dos microsserviços | — |
+| **Observability Deploy** | `observability-deploy.yml` | manual | Sobe a stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) via App-of-Apps | 1 + 2 |
+| **Sync Datadog Secret from SSM** | `datadog-secret-sync.yml` | manual | Cria o Secret `datadog-secret` no namespace `observability` a partir do SSM | 2 |
+| **GitOps** | `gitops.yml` | push em `deploy` ou manual | Cria/atualiza o `togglemaster-config` ConfigMap, aplica db-init jobs, dá rollout restart nos deployments | 3 |
+| **Alerts Deploy** | `alerts-deploy.yml` | manual | Aplica o Monitor do Datadog (`alerts/datadog/*.json`) via API — create/update idempotente | 4 |
+| **Self-Healing Rollout** | `self-healing.yml` | `repository_dispatch` (Datadog) ou manual | Executa `kubectl rollout restart` no serviço afetado em resposta ao alerta | 4 |
+| **Sync Kubernetes Secrets from SSM** | `secrets-sync.yml` | `workflow_call` | Reutilizável, chamado pelo `GitOps` para sincronizar secrets de banco/redis | — |
 
 ---
 
@@ -35,6 +37,8 @@ graph TD
 3. **Observabilidade**: `Observability Deploy` sobe toda a stack de monitoramento (ver `docs/observability.md`).
 4. **Datadog**: `Sync Datadog Secret from SSM` cria o secret que o OTel Collector precisa para exportar ao Datadog.
 5. **GitOps**: um push na branch `deploy` (ou execução manual) atualiza o ConfigMap da aplicação e dá rollout nos microsserviços.
+6. **Alertas**: `Alerts Deploy` cria o Monitor do Datadog (ver `docs/alerting.md`).
+7. **Self-Healing**: configurado uma vez pelo painel do Datadog (webhook → `self-healing.yml`); roda automaticamente quando o monitor dispara.
 
 ---
 
@@ -177,6 +181,63 @@ e cria/atualiza os Secrets de aplicação no namespace `togglemaster`:
 ### Trigger
 
 Apenas via `workflow_call`. Não é disparado manualmente.
+
+---
+
+---
+
+## Alerts Deploy (`alerts-deploy.yml`)
+
+### Papel
+
+Aplica (cria ou atualiza) o Monitor do Datadog a partir do JSON versionado
+em `alerts/datadog/`. Operação idempotente: busca o monitor pelo campo
+`name`, PUT se existir e POST se não.
+
+### Trigger
+
+Manual: Actions → **Alerts Deploy** → Run workflow → branch `deploy`.
+
+### Pré-requisitos
+
+- Datadog API Key e App Key no SSM.
+- Microsserviços instrumentados (Bloco 3) enviando traces ao Datadog APM.
+- Documentação detalhada: `docs/alerting.md`.
+
+---
+
+## Self-Healing Rollout (`self-healing.yml`)
+
+### Papel
+
+Executa `kubectl rollout restart` no deployment do serviço afetado,
+disparado por webhook do Datadog quando o Monitor entra em `alert`.
+
+Também pode ser executado manualmente para testes.
+
+### Diagrama
+
+```mermaid
+graph TD
+    A[Datadog Monitor dispara] -->|webhook| B[GitHub repository_dispatch]
+    B --> C[Workflow self-healing.yml]
+    C --> D[Validar servico<br/>whitelist]
+    D --> E[Resolve kubeconfig]
+    E --> F[kubectl rollout restart]
+    F --> G[Aguardar rollout concluir<br/>timeout 5min]
+    G --> H[Resumo no GITHUB_STEP_SUMMARY]
+```
+
+### Trigger
+
+- Automático: `repository_dispatch` com `event_type: datadog-alert` (configurado no painel do Datadog como webhook).
+- Manual: Actions → **Self-Healing Rollout** → Run workflow → selecionar o serviço.
+
+### Segurança
+
+- Whitelist dos 5 microsserviços conhecidos (não aceita nomes arbitrários).
+- Namespace fixo `togglemaster`.
+- Nenhuma credencial trafegada no payload do webhook (só o nome do serviço).
 
 ---
 

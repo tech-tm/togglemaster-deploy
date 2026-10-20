@@ -1,0 +1,28 @@
+{
+  "name": "[ToggleMaster] auth-service - taxa de erros 5xx > ${THRESHOLD_PERCENT}%",
+  "type": "metric alert",
+  "query": "sum(last_5m):default_zero(100 * (sum:trace.http.request.errors{service:auth-service,env:prod}.as_count() / sum:trace.http.request.hits{service:auth-service,env:prod}.as_count())) > ${THRESHOLD_PERCENT}",
+  "message": "## auth-service com taxa de erros HTTP 5xx acima de ${THRESHOLD_PERCENT}%\n\n**Serviço afetado:** `auth-service`\n**Namespace:** `togglemaster`\n**Severidade:** critical\n\n### Diagnóstico rápido\n- Service Map: {{ host.name }}\n- Logs do serviço: filtre `service:auth-service status:error` no Datadog Logs\n- Dashboard Grafana: painel 'Taxa de erros HTTP 5xx por servico'\n\n### Automação acionada\n- **OpsGenie**: incidente aberto automaticamente → notificação no Discord #alerts\n- **Self-Healing**: `kubectl rollout restart deployment/auth-service` executado via GitHub Actions\n\n### Links\n- [ToggleMaster Observability](https://github.com/tech-tm/togglemaster-deploy/blob/deploy/docs/observability.md)\n- [Runbook de Alertas](https://github.com/tech-tm/togglemaster-deploy/blob/deploy/docs/alerting.md)\n\n@opsgenie-togglemaster\n@webhook-togglemaster-self-healing",
+  "tags": [
+    "service:auth-service",
+    "team:togglemaster",
+    "env:prod",
+    "fase:4",
+    "severity:critical"
+  ],
+  "options": {
+    "thresholds": {
+      "critical": "${THRESHOLD_PERCENT}",
+      "warning": "${WARNING_PERCENT}"
+    },
+    "notify_no_data": false,
+    "no_data_timeframe": 10,
+    "renotify_interval": 30,
+    "require_full_window": false,
+    "evaluation_delay": 60,
+    "include_tags": true,
+    "escalation_message": "O alerta ainda está ativo. Verifique o self-healing e o incidente no OpsGenie.",
+    "new_host_delay": 300
+  },
+  "priority": 1
+}
