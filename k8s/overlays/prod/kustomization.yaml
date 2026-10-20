@@ -3,20 +3,24 @@ kind: Kustomization
 resources:
 - ../../base
 
-patches:
 # ============================================================
 # PATCH GENÉRICO: aplica revisionHistoryLimit a TODOS os Deployments
 # ============================================================
-- target:
-    kind: Deployment
-  patch: |-
-    - op: add
-      path: /spec/revisionHistoryLimit
-      value: 2
 
 # ============================================================
 # PATCHES INDIVIDUAIS: replicas específicas por serviço
 # ============================================================
+
+
+
+
+patches:
+- patch: |-
+    - op: add
+      path: /spec/revisionHistoryLimit
+      value: 2
+  target:
+    kind: Deployment
 - patch: |-
     - op: replace
       path: /spec/replicas
@@ -24,7 +28,6 @@ patches:
   target:
     kind: Deployment
     name: auth-service
-
 - patch: |-
     - op: replace
       path: /spec/replicas
@@ -32,7 +35,6 @@ patches:
   target:
     kind: Deployment
     name: flag-service
-
 - patch: |-
     - op: replace
       path: /spec/replicas
@@ -40,7 +42,6 @@ patches:
   target:
     kind: Deployment
     name: targeting-service
-
 - patch: |-
     - op: replace
       path: /spec/replicas
@@ -48,7 +49,6 @@ patches:
   target:
     kind: Deployment
     name: evaluation-service
-
 - patch: |-
     - op: replace
       path: /spec/replicas
@@ -62,8 +62,8 @@ patches:
 # ============================================================
 images:
 - name: analytics-service
-  newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/analytics-service
-  newTag: e249f5bcc318c56364b8e44c559cb1513762823e
+  newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/analytics-service
+  newTag: 4cb8a3eaf9816fdb7acc0f7b8a09dc131734b191
 - name: auth-service
   newName: 480176645265.dkr.ecr.us-east-1.amazonaws.com/auth-service
   newTag: e249f5bcc318c56364b8e44c559cb1513762823e
