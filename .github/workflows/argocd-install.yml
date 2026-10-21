@@ -44,20 +44,60 @@ jobs:
           version: 'v3.14.0'
 
       - name: Install ArgoCD via Helm
+        id: helm
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
           helm repo update
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+          # Limpa jobs orfaos de pre-upgrade de execucoes anteriores que
+          # podem travar o novo helm upgrade.
+          kubectl delete jobs -n argocd \
+            -l app.kubernetes.io/instance=argocd \
+            --ignore-not-found=true
+
           # Values em k8s/argocd/values.yaml incluem:
           #   - LoadBalancer + modo insecure (AWS Academy)
           #   - ignoreDifferences globais para campos novos do k8s 1.33+
           #     (ex: .status.terminatingReplicas) que o diff do ArgoCD
           #     ainda nao conhece.
+          #
+          # --timeout 15m: o default do Helm (5m) e pouco para o chart
+          # inteiro do ArgoCD subir no AWS Academy (imagens grandes +
+          # scheduling em t3.medium).
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --version 7.8.0 \
             -f k8s/argocd/values.yaml \
+            --timeout 15m \
             --wait
+
+      - name: Diagnostico (so roda se o Helm falhar)
+        if: failure() && steps.helm.outcome == 'failure'
+        run: |
+          echo "=== helm status ==="
+          helm status argocd -n argocd || true
+          echo
+          echo "=== helm history ==="
+          helm history argocd -n argocd || true
+          echo
+          echo "=== Pods nao-Running no namespace argocd ==="
+          kubectl get pods -n argocd --field-selector=status.phase!=Running -o wide || true
+          echo
+          echo "=== Jobs no namespace argocd ==="
+          kubectl get jobs -n argocd || true
+          echo
+          echo "=== PVCs no namespace argocd ==="
+          kubectl get pvc -n argocd || true
+          echo
+          echo "=== Ultimos 40 events ==="
+          kubectl get events -n argocd --sort-by='.lastTimestamp' | tail -40 || true
+          echo
+          echo "=== Descrevendo pods com problema ==="
+          for pod in $(kubectl get pods -n argocd --field-selector=status.phase!=Running -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe "$pod" -n argocd | tail -30 || true
+          done
 
       - name: Create namespace togglemaster
         run: |
