@@ -63,16 +63,16 @@ patches:
 images:
 - name: analytics-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/analytics-service
-  newTag: f5cb398fa0e8d2b3014c28189914bcada27468d7
+  newTag: 17a912c46614e8ac13d3ced2997a64b6336b2231
 - name: auth-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/auth-service
-  newTag: f5cb398fa0e8d2b3014c28189914bcada27468d7
+  newTag: 17a912c46614e8ac13d3ced2997a64b6336b2231
 - name: evaluation-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/evaluation-service
-  newTag: f5cb398fa0e8d2b3014c28189914bcada27468d7
+  newTag: 17a912c46614e8ac13d3ced2997a64b6336b2231
 - name: flag-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/flag-service
-  newTag: f5cb398fa0e8d2b3014c28189914bcada27468d7
+  newTag: 17a912c46614e8ac13d3ced2997a64b6336b2231
 - name: targeting-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/targeting-service
-  newTag: f5cb398fa0e8d2b3014c28189914bcada27468d7
+  newTag: 17a912c46614e8ac13d3ced2997a64b6336b2231
