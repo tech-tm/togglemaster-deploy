@@ -22,6 +22,12 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [8. Credenciais AWS Academy expiradas](#8-credenciais-aws-academy-expiradas)
 - [9. Monitor do Datadog retorna HTTP 403](#9-monitor-do-datadog-retorna-http-403)
 - [10. Self-Healing workflow não dispara pelo webhook](#10-self-healing-workflow-não-dispara-pelo-webhook)
+- [11. OTel Collector CrashLoop: `invalid keys: address`](#11-otel-collector-crashloop-invalid-keys-address)
+- [12. Terraform EKS: `Error: Unauthorized` ao criar namespace](#12-terraform-eks-error-unauthorized-ao-criar-namespace)
+- [13. Pod `Pending`: `failed to assign an IP address`](#13-pod-pending-failed-to-assign-an-ip-address)
+- [14. Evaluation/Analytics: `NoCredentialProviders` (SQS/DynamoDB)](#14-evaluationanalytics-nocredentialproviders-sqsdynamodb)
+- [15. OTel Collector ingestão 403: API Key errada no SSM](#15-otel-collector-ingest%C3%A3o-403-api-key-errada-no-ssm)
+- [16. Ingress retorna 404 ao acessar endpoints dos microsserviços](#16-ingress-retorna-404-ao-acessar-endpoints-dos-microsservi%C3%A7os)
 
 ---
 
@@ -524,6 +530,303 @@ curl -X POST \
 
 ---
 
+## 11. OTel Collector CrashLoop: `invalid keys: address`
+
+### Sintoma
+
+```bash
+kubectl logs -n observability deploy/otel-collector-opentelemetry-collector --tail=50
+# Error: failed to get config: cannot unmarshal the configuration:
+# 'service.telemetry.metrics' decoding failed due to the following error(s):
+# 'migration.MetricsConfigV030' has invalid keys: address
+```
+
+Pod em `CrashLoopBackOff`, Application `otel-collector` fica `Degraded`.
+
+### Causa
+
+A chave `service.telemetry.metrics.address` foi **removida** no OpenTelemetry
+Collector v0.123+ (migração para o padrão MetricReaders do OTel SDK). Se o
+chart `opentelemetry-collector` do Helm puxar uma imagem contrib mais nova
+que o seu values suporta, o config fica inválido.
+
+### Solução
+
+Já corrigido em `k8s/observability/applications/otel-collector.yaml`:
+
+- Chave `service.telemetry.metrics.address` **removida** (as métricas internas
+  do próprio collector não são requisito do Fase 4).
+- Tag da imagem **fixada em `0.160.0`** pra evitar surpresas futuras:
+  ```yaml
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.160.0"
+  ```
+
+Se precisar expor métricas internas no futuro, use a sintaxe nova:
+
+```yaml
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+```
+
+---
+
+## 12. Terraform EKS: `Error: Unauthorized` ao criar namespace
+
+### Sintoma
+
+```text
+module.eks.aws_eks_node_group.nodes: Creation complete after 1m56s
+module.eks.kubernetes_namespace.togglemaster: Creating...
+│ Error: Unauthorized
+│   with module.eks.kubernetes_namespace.togglemaster,
+│   on ../../../modules/eks/main.tf line 88
+```
+
+### Causa
+
+Anti-pattern clássico: criar o cluster EKS **e** um recurso Kubernetes
+no mesmo `terraform apply`. O provider `kubernetes` resolve o token de
+autenticação **cedo demais** (antes do plano de controle aceitar o caller
+`LabRole`), causando `Unauthorized` ao chegar no `kubernetes_namespace`.
+
+### Solução
+
+Já corrigido em:
+
+- `terraform/modules/eks/main.tf`: `resource "kubernetes_namespace" "togglemaster"` **removido**.
+- `terraform/environments/prod/compute/main.tf`: provider `kubernetes` + `data "aws_eks_cluster_auth"` **removidos** (ficavam órfãos).
+
+O namespace `togglemaster` é criado em 3 outros lugares (todos pós-cluster):
+
+- Workflow `argocd-install.yml`
+- Workflow `gitops.yml`
+- Application do ArgoCD (`syncOption CreateNamespace=true`)
+
+---
+
+## 13. Pod `Pending`: `failed to assign an IP address`
+
+### Sintoma
+
+```text
+FailedCreatePodSandBox   failed to setup network for sandbox ...
+plugin type="aws-cni" name="aws-cni" failed (add):
+add cmd: failed to assign an IP address to container
+```
+
+### Causa
+
+O VPC CNI padrão do EKS tem **limite de IPs por nó** baseado no tipo de
+instância. Para `t3.medium`: ~17 pods por nó. Se o cluster tiver 2 nós,
+o teto é ~34 pods, e com Prometheus/Grafana/Loki/OTel + microsserviços
++ ArgoCD é fácil estourar.
+
+**Isso NÃO é limitação específica do AWS Academy** — é limite do CNI padrão
+da AWS. A solução ideal (prefix delegation via IRSA) **é** bloqueada pelo
+AWS Academy por exigir criar IAM Role, mas a solução via mais nós funciona.
+
+### Solução
+
+Já corrigido em `terraform/environments/prod/compute/terraform.tfvars`:
+
+```hcl
+# Antes
+desired_size = 2
+# Depois
+desired_size = 3
+```
+
+Com 3 nós `t3.medium`, a capacidade sobe pra ~51 pods — folga confortável.
+
+**Após o apply**, se Jobs antigos ficaram marcados como falhos, limpa:
+
+```bash
+kubectl delete jobs -n observability \
+  -l app.kubernetes.io/name=kube-prometheus-stack \
+  --ignore-not-found
+
+kubectl annotate application kube-prometheus-stack -n argocd \
+  argocd.argoproj.io/refresh=hard --overwrite
+```
+
+---
+
+## 14. Evaluation/Analytics: `NoCredentialProviders` (SQS/DynamoDB)
+
+### Sintoma
+
+Logs do `evaluation-service` ou `analytics-service`:
+
+```text
+Erro ao enviar mensagem para SQS: NoCredentialProviders:
+no valid providers in chain. Deprecated.
+```
+
+### Causa
+
+O SDK AWS procurou credenciais em todos os lugares padrão e não achou:
+
+1. Env vars `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` — não setadas no pod.
+2. `~/.aws/credentials` — não existe no container.
+3. IRSA (IAM Role for Service Account) — **bloqueado pelo AWS Academy** (LabRole não pode criar IAM Role nova).
+
+### Solução
+
+Já corrigido em:
+
+- `.github/workflows/secrets-sync.yml`: workflow agora adiciona
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
+  no Secret `togglemaster-secrets` (vindos dos secrets do runner).
+- `k8s/base/services/evaluation/deployment.yaml`: +3 envs `AWS_*` via `secretKeyRef`.
+- `k8s/base/services/analytics/deployment.yaml`: idem.
+
+**Importante**: como as credenciais são da sessão AWS Academy (duram ~4h),
+**toda renovação de sessão exige re-rodar o GitOps** pra atualizar o Secret
+k8s com as credenciais frescas:
+
+```bash
+cd togglemaster-deploy
+git commit --allow-empty -m "chore: refresh aws session"
+git push origin deploy
+# espera ~3-5 min pelo GitOps terminar
+kubectl rollout restart deployment evaluation-service analytics-service -n togglemaster
+```
+
+Protocolo completo: ver seção **"Renovação de sessão AWS Academy"** em `DEPLOY.md`.
+
+---
+
+## 15. OTel Collector ingestão 403: API Key errada no SSM
+
+### Sintoma
+
+Logs do collector:
+
+```text
+error  datadogexporter  Error posting hostname/tags series
+error: "Permanent error: 403 Forbidden"
+API Key invalid (403 response), dropping transaction
+```
+
+Datadog APM **vazio**, nenhum serviço aparece em "APM → Services".
+
+### Causa
+
+Confusão entre **API Key** e **Application Key** do Datadog. Elas servem pra
+coisas diferentes:
+
+| Credencial | Prefixo | Pra que serve | Vai em |
+|---|---|---|---|
+| **API Key** (DD_API_KEY) | **sem prefixo** — 32 chars hex puros | Ingestão de dados (traces, metrics, logs) | `/togglemaster/prod/datadog/api-key` |
+| **Application Key** (DD_APP_KEY) | `ddpat_...` ou 40 chars hex | Chamar a API (criar monitors, dashboards) | `/togglemaster/prod/datadog/app-key` |
+
+Erro comum: gravar a Application Key no slot da API Key. A Application Key
+não autoriza ingestão → 403 Forbidden.
+
+### Diagnóstico (teste direto na API)
+
+```bash
+API_KEY=$(kubectl get secret datadog-secret -n observability \
+  -o jsonpath='{.data.api-key}' | base64 -d)
+SITE=$(kubectl get secret datadog-secret -n observability \
+  -o jsonpath='{.data.site}' | base64 -d)
+
+echo "comprimento: $(echo -n "$API_KEY" | wc -c) chars"
+echo "prefixo ddpat_? $(echo "$API_KEY" | grep -c '^ddpat_')"
+
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  "https://api.$SITE/api/v1/validate" \
+  -H "DD-API-KEY: $API_KEY"
+# 200 {"valid":true}  → key correta
+# 403                 → não é API Key
+# 404                 → site errado
+```
+
+### Solução
+
+1. Datadog UI → avatar → **Organization Settings** → **API Keys** (não "Application Keys").
+2. Clique numa key existente ou **New Key**; copie o valor (**32 chars hex, sem prefixo**).
+3. Grava no SSM:
+   ```bash
+   aws ssm put-parameter --name "/togglemaster/prod/datadog/api-key" \
+     --type SecureString --value "<32_CHARS_HEX>" --overwrite
+   ```
+4. Re-sincroniza o Secret:
+   ```bash
+   # Pelo workflow:
+   # togglemaster-deploy → Actions → Sync Datadog Secret from SSM → Run
+
+   # Ou manual:
+   DD_API_KEY=$(aws ssm get-parameter --name "/togglemaster/prod/datadog/api-key" \
+     --with-decryption --query "Parameter.Value" --output text)
+   DD_SITE=$(aws ssm get-parameter --name "/togglemaster/prod/datadog/site" \
+     --query "Parameter.Value" --output text 2>/dev/null || echo "datadoghq.com")
+   kubectl create secret generic datadog-secret -n observability \
+     --from-literal=api-key="$DD_API_KEY" \
+     --from-literal=site="$DD_SITE" \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+5. Rolla o collector:
+   ```bash
+   kubectl rollout restart deployment \
+     otel-collector-opentelemetry-collector -n observability
+   ```
+
+---
+
+## 16. Ingress retorna 404 ao acessar endpoints dos microsserviços
+
+### Sintoma
+
+```bash
+curl "http://$INGRESS/evaluate?user_id=u1&flag_name=test"
+# HTTP/1.1 404 Not Found
+```
+
+### Causa
+
+O `togglemaster-ingress` usa **prefixos por serviço** com `rewrite-target: /$2`.
+O nginx-ingress só roteia requisições que batem com um dos prefixos.
+Chamadas sem prefixo retornam 404 do nginx default backend.
+
+### Mapa correto das rotas
+
+| URL externa | Vai pro serviço | Vira no backend |
+|---|---|---|
+| `/validate/<path>` | auth-service | `/<path>` |
+| `/flag/<path>` | flag-service | `/<path>` |
+| `/targeting/<path>` | targeting-service | `/<path>` |
+| `/evaluation/<path>` | evaluation-service | `/<path>` |
+| `/analytics/<path>` | analytics-service | `/<path>` |
+
+### Exemplos corretos
+
+```bash
+# health dos 5 serviços
+for route in validate flag targeting evaluation analytics; do
+  curl -s -o /dev/null -w "%s/health → %{http_code}\n" "$route" "http://$INGRESS/$route/health"
+done
+
+# chamada ao evaluate (note o prefixo /evaluation/)
+curl "http://$INGRESS/evaluation/evaluate?user_id=u1&flag_name=test"
+
+# listar flags (prefixo /flag/)
+curl "http://$INGRESS/flag/flags" -H "Authorization: Bearer anything"
+```
+
+Fonte: `k8s/base/ingress.yaml`.
+
+---
+
 ## Diagnóstico rápido (comandos úteis em qualquer situação)
 
 ```bash
@@ -545,4 +848,6 @@ kubectl get events -n <ns> --sort-by='.lastTimestamp' | tail -20
 
 # Logs do argocd-application-controller (quem faz os diffs)
 kubectl logs -n argocd statefulset/argocd-application-controller --tail=100
+
+# FIM
 ```

@@ -24,6 +24,12 @@ veja [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).
 
 Pegue as credenciais do AWS Academy e cole em `~/.aws/credentials` (seção `[default]`). Elas duram ~4h.
 
+> ⚠️ **A sessão AWS Academy expira em ~4h.** Veja a seção
+> **"Renovação de sessão AWS Academy"** no final do documento quando isso acontecer.
+> Não é só renovar o `~/.aws/credentials` — também precisa atualizar os
+> secrets do GitHub E re-sincronizar o Secret do cluster (via GitOps),
+> senão `evaluation-service` e `analytics-service` perdem acesso ao SQS/DynamoDB.
+
 ### 0.2 Secrets do GitHub
 
 Nos repos **`togglemaster-app`** e **`togglemaster-deploy`**:
@@ -229,12 +235,19 @@ git push origin deploy
 ```
 
 Isso dispara o workflow **GitOps** que:
-1. Cria `togglemaster-secrets`, `db-*-secret`, `redis-secret` no cluster (de SSM).
+1. Cria `togglemaster-secrets` (com credenciais Postgres, Redis, MASTER_KEY, SERVICE_API_KEY **e credenciais AWS da sessão atual**), `db-*-secret`, `redis-secret` no cluster.
 2. Cria/atualiza o ConfigMap `togglemaster-config` com endpoints reais **e as envs OTEL_*** (Bloco 3).
 3. Aplica os db-init Jobs.
 4. Faz `kubectl rollout restart` nos 5 deployments pra pegar as novas envs.
 
 Duração: ~5 min.
+
+> **Importante**: as credenciais AWS no `togglemaster-secrets` vêm dos
+> secrets do GitHub Actions (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+> `AWS_SESSION_TOKEN`). Elas são necessárias pro `evaluation-service` falar
+> com SQS e pro `analytics-service` falar com SQS+DynamoDB. Como são
+> credenciais temporárias do AWS Academy, elas expiram em 4h — reveja a
+> seção **"Renovação de sessão AWS Academy"** quando isso acontecer.
 
 ### 5.2 Validar
 
@@ -245,8 +258,17 @@ kubectl get pods -n togglemaster
 # ConfigMap tem as envs OTEL
 kubectl get cm togglemaster-config -n togglemaster -o yaml | grep OTEL_
 
-# Pod tem as envs OTEL
+# Auth, flag e targeting: envs OTEL (devem ter 4-6 OTEL_*)
 kubectl exec -n togglemaster deploy/auth-service -- env | grep OTEL_
+
+# Evaluation: tem OTEL + credenciais AWS (sem as AWS_*, SQS falha com NoCredentialProviders)
+kubectl exec -n togglemaster deploy/evaluation-service -- env | grep -E "^OTEL_|^AWS_"
+
+# Analytics: idem
+kubectl exec -n togglemaster deploy/analytics-service -- env | grep -E "^OTEL_|^AWS_"
+
+# Logs do evaluation não devem ter "NoCredentialProviders"
+kubectl logs -n togglemaster deploy/evaluation-service --tail=50 | grep -i "credential\|sqs" || echo "✓ Sem erros de credenciais"
 ```
 
 Depois disso, abra o **Datadog APM → Services**: os 5 serviços devem aparecer. Pode levar alguns minutos até os primeiros traces chegarem.
@@ -289,16 +311,30 @@ INGRESS=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
 echo "http://$INGRESS"
 ```
 
-Faça algumas chamadas de evaluate (depende dos dados — ajuste `flag_name`):
+Faça algumas chamadas de evaluate — **note que o Ingress exige o prefixo `/evaluation/`** (sem ele dá 404):
 
 ```bash
+# Health dos 5 serviços (rotas do Ingress têm prefixo por serviço)
+for route in validate flag targeting evaluation analytics; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$INGRESS/$route/health")
+  echo "$route/health → HTTP $code"
+done
+
+# Carga: evaluate chama auth + flag + targeting (povoa o Service Map)
 for i in {1..50}; do
-  curl -s "http://$INGRESS/evaluate?user_id=u$i&flag_name=test-flag"
+  curl -s -o /dev/null "http://$INGRESS/evaluation/evaluate?user_id=u$i&flag_name=test-flag"
 done
 ```
 
 Observe no Datadog APM → **Service Map**: os 5 serviços devem aparecer
 conectados por setas (`evaluation` → `auth`, `flag`, `targeting`).
+
+> **Mapa de rotas do Ingress** (prefixo é rewriten pelo nginx):
+> - `/validate/<path>` → `auth-service` recebe `/<path>`
+> - `/flag/<path>` → `flag-service`
+> - `/targeting/<path>` → `targeting-service`
+> - `/evaluation/<path>` → `evaluation-service`
+> - `/analytics/<path>` → `analytics-service`
 
 ### 7.2 Causar incidente proposital
 
@@ -308,11 +344,11 @@ Derruba o `auth-service` pra forçar erros no evaluation:
 kubectl scale deployment auth-service -n togglemaster --replicas=0
 ```
 
-Dispare carga pelo `/evaluate`:
+Dispare carga:
 
 ```bash
 for i in {1..500}; do
-  curl -s "http://$INGRESS/evaluate?user_id=u$i&flag_name=test-flag" &
+  curl -s -o /dev/null "http://$INGRESS/evaluation/evaluate?user_id=u$i&flag_name=test-flag" &
 done
 wait
 ```
@@ -370,3 +406,59 @@ graph TD
 ```
 
 Se qualquer passo falhar: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).
+
+---
+
+## Renovação de sessão AWS Academy (a cada 4h)
+
+A sessão AWS Academy expira após 4 horas. Quando expirar, as credenciais em
+3 lugares distintos ficam velhas e precisam ser renovadas:
+
+```text
+Learner Lab (AWS Academy)
+      │
+      ├── ~/.aws/credentials       ← kubectl/aws CLI local
+      ├── GitHub Secrets x2 repos  ← workflows do GitHub Actions
+      └── Secret togglemaster-secrets ← pods evaluation + analytics
+```
+
+### Protocolo completo de renovação
+
+```bash
+# 1. Pega credenciais frescas no Learner Lab (AWS Details → copiar)
+
+# 2. Atualiza ~/.aws/credentials local
+nano ~/.aws/credentials
+
+# 3. Atualiza os 3 secrets em CADA repo do GitHub
+#    (togglemaster-app E togglemaster-deploy):
+#      AWS_ACCESS_KEY_ID
+#      AWS_SECRET_ACCESS_KEY
+#      AWS_SESSION_TOKEN
+#    Settings → Secrets and variables → Actions
+
+# 4. Dispara o GitOps (que re-sincroniza o Secret k8s com credenciais frescas)
+cd togglemaster-deploy
+git checkout deploy
+git commit --allow-empty -m "chore: refresh aws session"
+git push origin deploy
+# Aguarda ~3-5 min pelo workflow GitOps terminar.
+
+# 5. Rolla os deployments que dependem de AWS SDK
+kubectl rollout restart deployment evaluation-service analytics-service -n togglemaster
+kubectl rollout status  deployment evaluation-service analytics-service -n togglemaster --timeout=3m
+
+# 6. Confirma que o SQS voltou (não deve ter mais "NoCredentialProviders")
+kubectl logs -n togglemaster deploy/evaluation-service --tail=30 | grep -iE "credential|sqs" || echo "✓ Sem erros"
+```
+
+### Sinais de que a sessão expirou
+
+- Workflows com `ExpiredToken` nos logs.
+- Pod `evaluation-service` com `NoCredentialProviders: no valid providers in chain`.
+- `aws sts get-caller-identity` local falha.
+
+Para o **vídeo da entrega** (Fase 7-8): **renove a sessão imediatamente antes
+de começar a gravação** para ter 4h limpas.
+
+# FIM
