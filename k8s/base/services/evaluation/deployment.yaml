@@ -67,6 +67,25 @@ spec:
             configMapKeyRef:
               name: togglemaster-config
               key: AWS_REGION
+        # Credenciais AWS da sessao do AWS Academy (sincronizadas pelo
+        # secrets-sync.yml). Necessarias para o SDK aws-sdk-go autenticar
+        # ao chamar SQS SendMessage. No AWS Academy nao podemos usar IRSA
+        # (criar IAM Role novo), entao passamos credenciais estaticas.
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_SESSION_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_SESSION_TOKEN
         - name: SERVICE_API_KEY
           valueFrom:
             secretKeyRef:
