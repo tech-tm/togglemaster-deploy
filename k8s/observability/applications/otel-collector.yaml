@@ -16,9 +16,13 @@ spec:
       values: |
         # ----------------------------------------------------------------
         # Imagem: contrib inclui exporters nao-core (datadog, loki, etc).
+        # Tag fixada: evita que uma versao mais nova introduza breaking
+        # changes de config no proximo redeploy (ex: v0.123 removeu
+        # service.telemetry.metrics.address; v0.160.0 e estavel aqui).
         # ----------------------------------------------------------------
         image:
           repository: otel/opentelemetry-collector-contrib
+          tag: "0.160.0"
 
         # Deployment singleton: recebe OTLP dos microsservicos no cluster.
         mode: deployment
@@ -150,9 +154,20 @@ spec:
               verbosity: basic
 
           service:
-            telemetry:
-              metrics:
-                address: 0.0.0.0:8888
+            # NOTA: a chave service.telemetry.metrics.address foi removida
+            # no OpenTelemetry Collector >= v0.123 (migracao para o padrao
+            # MetricReaders do OTel SDK). Se quiser expor as metricas
+            # internas do proprio collector em um futuro, use a nova
+            # sintaxe:
+            #   telemetry:
+            #     metrics:
+            #       readers:
+            #         - pull:
+            #             exporter:
+            #               prometheus:
+            #                 host: 0.0.0.0
+            #                 port: 8888
+            # Hoje nao precisamos delas (nao sao requisito da Fase 4).
             pipelines:
               traces:
                 receivers: [otlp]
