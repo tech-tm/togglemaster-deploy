@@ -29,6 +29,7 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [15. OTel Collector ingestão 403: API Key errada no SSM](#15-otel-collector-ingest%C3%A3o-403-api-key-errada-no-ssm)
 - [16. Ingress retorna 404 ao acessar endpoints dos microsserviços](#16-ingress-retorna-404-ao-acessar-endpoints-dos-microsservi%C3%A7os)
 - [17. `InvalidSignatureException` ao chamar AWS no workflow](#17-invalidsignatureexception-ao-chamar-aws-no-workflow)
+- [18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`](#18-application-togglemaster-fica-outofsync-em-specreplicas)
 
 ---
 
@@ -837,6 +838,70 @@ curl "http://$INGRESS/flag/flags" -H "Authorization: Bearer anything"
 ```
 
 Fonte: `k8s/base/ingress.yaml`.
+
+---
+
+## 18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`
+
+### Sintoma
+
+Na UI do ArgoCD, Application `togglemaster` fica `OutOfSync + Healthy`. No diff aparece algo tipo:
+
+```text
+apps/Deployment/togglemaster/evaluation-service
+
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2             ← no cluster (ajustado pelo HPA)
+  replicas: 3             ← no Git (overlay prod)
+  revisionHistoryLimit: 2
+```
+
+### Causa
+
+Conflito clássico entre **HPA** (HorizontalPodAutoscaler) e **ArgoCD**:
+
+- O Git declara `replicas: N` (via `k8s/overlays/prod/kustomization.yaml`).
+- Mas existe um `HorizontalPodAutoscaler` (`k8s/base/services/{evaluation,analytics}/hpa.yaml`) que **sobrescreve esse valor em runtime** conforme carga de CPU/memória.
+- ArgoCD compara desired state (Git) com live state (cluster) → sempre diferente quando o HPA está ativo.
+- `selfHeal: true` tentaria reverter o HPA, criando uma guerra que o HPA sempre vence.
+
+### Solução
+
+Já corrigido em `k8s/application.yaml` da Application `togglemaster`:
+
+```yaml
+ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    name: evaluation-service
+    jsonPointers:
+      - /spec/replicas
+  - group: apps
+    kind: Deployment
+    name: analytics-service
+    jsonPointers:
+      - /spec/replicas
+syncPolicy:
+  syncOptions:
+    - RespectIgnoreDifferences=true  # essencial com selfHeal
+```
+
+- O `ignoreDifferences` diz pro ArgoCD **ignorar** o campo `/spec/replicas` nesses 2 Deployments específicos.
+- `RespectIgnoreDifferences=true` nas `syncOptions` garante que o `selfHeal` **também** respeite esse ignore (sem ele, o selfHeal reverteria o HPA).
+
+### Como forçar re-sincronização após o fix
+
+```bash
+kubectl annotate application togglemaster -n argocd \
+  argocd.argoproj.io/refresh=hard --overwrite
+```
+
+Em ~30s a Application deve ir pra `Synced + Healthy`.
+
+### Boa prática: nunca declare replicas num Deployment com HPA
+
+Se um Deployment tem HPA, o ideal seria **não declarar `replicas:`** no manifest base — deixa o HPA ser a única fonte de verdade. Mas nesse projeto o overlay prod seta `replicas` explicitamente (via `kustomize patches`), então optamos por manter e usar `ignoreDifferences` em vez de refatorar.
 
 ---
 
