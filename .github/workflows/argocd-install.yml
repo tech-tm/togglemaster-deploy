@@ -21,23 +21,60 @@ jobs:
         with:
           ref: deploy
 
+      # Sanitiza os secrets: remove qualquer whitespace/newline que tenha
+      # sido colado por acidente ao copiar as credenciais do AWS Academy.
+      # Um unico \n no final de AWS_SECRET_ACCESS_KEY e suficiente para
+      # gerar InvalidSignatureException em todas as chamadas AWS CLI.
+      - name: Sanitize AWS credentials (trim whitespace/newlines)
+        id: aws_creds
+        env:
+          RAW_AKI: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          RAW_SAK: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RAW_TOK: ${{ secrets.AWS_SESSION_TOKEN }}
+          RAW_REG: ${{ secrets.AWS_REGION }}
+        run: |
+          # 'tr -d' remove todos os \r, \n, espaco e tab do valor
+          AKI=$(printf '%s' "$RAW_AKI" | tr -d '\r\n \t')
+          SAK=$(printf '%s' "$RAW_SAK" | tr -d '\r\n \t')
+          TOK=$(printf '%s' "$RAW_TOK" | tr -d '\r\n \t')
+          REG=$(printf '%s' "${RAW_REG:-us-east-1}" | tr -d '\r\n \t')
+
+          # Marca os valores limpos para que o GitHub Actions os censure no log
+          echo "::add-mask::$AKI"
+          echo "::add-mask::$SAK"
+          echo "::add-mask::$TOK"
+
+          # Confere comprimentos esperados (nao mostra valor, so tamanho)
+          echo "AWS_ACCESS_KEY_ID len     : ${#AKI} (esperado: 20 para AKIA* ou 21 para ASIA*)"
+          echo "AWS_SECRET_ACCESS_KEY len : ${#SAK} (esperado: 40)"
+          echo "AWS_SESSION_TOKEN len     : ${#TOK} (esperado: ~600-900)"
+          echo "AWS_REGION                : $REG"
+
+          # Falha cedo se algum vier vazio ou claramente errado
+          if [ ${#AKI} -lt 16 ] || [ ${#SAK} -lt 30 ]; then
+            echo "::error::Credenciais AWS parecem invalidas/vazias apos trim."
+            exit 1
+          fi
+
+          # Exporta para os proximos steps via outputs
+          echo "aki=$AKI" >> $GITHUB_OUTPUT
+          echo "sak=$SAK" >> $GITHUB_OUTPUT
+          echo "tok=$TOK" >> $GITHUB_OUTPUT
+          echo "reg=$REG" >> $GITHUB_OUTPUT
+
       # Configure AWS credentials DEVE vir ANTES de qualquer chamada 'aws'.
-      # O action valida as credenciais via STS e normaliza o ambiente.
-      # Chamadas 'aws' feitas apenas com env vars nao sao recomendadas e
-      # podem resultar em InvalidSignatureException se as 3 credenciais
-      # da sessao AWS Academy nao estiverem perfeitamente sincronizadas.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id:     ${{ steps.aws_creds.outputs.aki }}
+          aws-secret-access-key: ${{ steps.aws_creds.outputs.sak }}
+          aws-session-token:     ${{ steps.aws_creds.outputs.tok }}
+          aws-region:            ${{ steps.aws_creds.outputs.reg }}
 
       - name: Validar credenciais AWS (sts get-caller-identity)
         run: |
-          # Falha cedo com mensagem clara se as credenciais do GitHub Secrets
-          # estiverem desalinhadas (comum: renovou lab e atualizou so uma das 3).
+          # Falha cedo com mensagem clara se as credenciais estiverem
+          # desalinhadas (comum: renovou lab e atualizou so uma das 3).
           if ! aws sts get-caller-identity > /tmp/identity.json 2>&1; then
             echo "::error::Credenciais AWS invalidas. Veja TROUBLESHOOTING.md secoes 8 e 17."
             cat /tmp/identity.json
