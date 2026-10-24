@@ -28,6 +28,7 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [14. Evaluation/Analytics: `NoCredentialProviders` (SQS/DynamoDB)](#14-evaluationanalytics-nocredentialproviders-sqsdynamodb)
 - [15. OTel Collector ingestão 403: API Key errada no SSM](#15-otel-collector-ingest%C3%A3o-403-api-key-errada-no-ssm)
 - [16. Ingress retorna 404 ao acessar endpoints dos microsserviços](#16-ingress-retorna-404-ao-acessar-endpoints-dos-microsservi%C3%A7os)
+- [17. `InvalidSignatureException` ao chamar AWS no workflow](#17-invalidsignatureexception-ao-chamar-aws-no-workflow)
 
 ---
 
@@ -812,6 +813,67 @@ curl "http://$INGRESS/flag/flags" -H "Authorization: Bearer anything"
 ```
 
 Fonte: `k8s/base/ingress.yaml`.
+
+---
+
+## 17. `InvalidSignatureException` ao chamar AWS no workflow
+
+### Sintoma
+
+Workflow falha num step que chama `aws` (ex: `Get cluster name from SSM`):
+
+```text
+aws: [ERROR]: An error occurred (InvalidSignatureException) when calling
+the GetParameter operation: The request signature we calculated does not
+match the signature you provided. Check your AWS Secret Access Key and
+signing method.
+```
+
+### Causa
+
+**Não é** credenciais expiradas (seria `ExpiredToken`). É uma de duas coisas:
+
+1. **As 3 credenciais no GitHub Secrets são de sessões diferentes.** Muito
+   comum no AWS Academy: você renova o lab, atualiza `AWS_ACCESS_KEY_ID`,
+   mas esquece de atualizar `AWS_SECRET_ACCESS_KEY` ou `AWS_SESSION_TOKEN`.
+   O mix de credenciais gera uma assinatura inválida.
+
+2. **`AWS_SECRET_ACCESS_KEY` corrompido no copy/paste** — whitespace invisível
+   no fim, quebra de linha, caractere `+`/`/`/`=` escapado errado pelo browser.
+
+### Solução
+
+**Protocolo correto de renovação** (seção também em `DEPLOY.md`):
+
+1. Reabrir o Learner Lab no AWS Academy.
+2. Clicar em **AWS Details** → copiar as **3 credenciais na mesma sessão**.
+3. Em **cada repo** (`togglemaster-app` E `togglemaster-deploy`):
+   Settings → Secrets and variables → Actions → atualizar **as 3 ao mesmo tempo**:
+   - `AWS_ACCESS_KEY_ID`
+   - `AWS_SECRET_ACCESS_KEY`
+   - `AWS_SESSION_TOKEN`
+
+> Ao colar no GitHub, confira que não há espaços antes/depois do valor.
+> O GitHub NÃO trim espaços automaticamente.
+
+### Validar localmente antes de retentar o workflow
+
+```bash
+# Atualiza o ~/.aws/credentials com as mesmas 3 credenciais
+nano ~/.aws/credentials
+
+# Testa — se funcionar local, funciona no workflow
+aws sts get-caller-identity --profile aws_fiap
+# Esperado: JSON com UserId, Account, Arn
+# Erro: SignatureDoesNotMatch | InvalidSignatureException  → credenciais desalinhadas, renove TODAS as 3
+```
+
+### Prevenção (já aplicada)
+
+- O workflow `argocd-install.yml` agora tem um step
+  **"Validar credenciais AWS (sts get-caller-identity)"** logo após
+  `Configure AWS credentials`. Se as credenciais estiverem erradas, falha
+  cedo com mensagem clara em vez de confundir o diagnóstico depois.
 
 ---
 
