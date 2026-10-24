@@ -379,34 +379,22 @@ tentar disparar o `argocd-install.yml` no `togglemaster-deploy`.
 
 ### Causa
 
-O script `github-script` tem o `owner` hardcoded com valor que **não bate** com
-o git remote dos seus repos. Trecho em `togglemaster-app/.github/workflows/terraform-apply.yml`:
-
-```javascript
-const owner = 'togglemaster-fiapdevops';
-```
-
-Mas o remote real pode ser outro (ex: `tech-tm`).
+O script `github-script` do job `trigger-argocd-install` tem o `owner`
+hardcoded. Se o valor hardcoded não bater com o git remote dos seus repos,
+o `createWorkflowDispatch` retorna 404.
 
 ### Solução
 
-**Opção A** (recomendada): ignorar o erro. Esse job é opcional — depois do
-Terraform terminar, você mesmo roda `Install ArgoCD` manualmente pela UI.
+**Já corrigido no repo** para `owner = 'tech-tm'`.
 
-**Opção B**: corrigir o owner no arquivo. Em
-`togglemaster-app/.github/workflows/terraform-apply.yml`, trocar:
+Se o seu fork estiver em outra organização, atualize em
+`togglemaster-app/.github/workflows/terraform-apply.yml` (procure por
+`const owner =`). Valide com `git remote -v` do repo `togglemaster-deploy`.
 
-```javascript
-const owner = 'togglemaster-fiapdevops';
-```
-
-Por:
-
-```javascript
-const owner = '<org-correta>';   // ex: 'tech-tm'
-```
-
-Validar com `git remote -v` do repo `togglemaster-deploy`.
+Observação: mesmo com o owner certo, o job depende do secret
+`PERSONAL_ACCESS_TOKEN` com escopo `repo` configurado no `togglemaster-app`.
+Se o PAT estiver ausente ou expirado, o job também falha — nesse caso
+rode `Install ArgoCD` manualmente pela UI do `togglemaster-deploy`.
 
 ---
 

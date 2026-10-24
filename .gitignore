@@ -1,0 +1,53 @@
+# ----------------------------------------------------------------------
+# .gitignore do togglemaster-deploy
+#
+# Este repo e GitOps puro: so manifests Kubernetes, workflows e docs.
+# Nao deveria ter artefatos de build, state de ferramentas ou segredos.
+# ----------------------------------------------------------------------
+
+# --- Segredos (NUNCA versionar) ---
+.env
+.env.*
+*.pem
+*.key
+credentials
+secrets.yaml
+secret.yaml
+
+# --- Artefatos de validacao / debug local ---
+# Ex: 'helm template > render.yaml', 'logs/' de testes locais, etc.
+*-render.yaml
+*-render.yml
+*-err.log
+*.log
+/tmp/
+tmp/
+
+# --- Kubectl / Kubeconfig ---
+kubeconfig
+*.kubeconfig
+.kube/
+
+# --- Helm (se alguem rodar helm localmente para testar charts) ---
+charts/
+*.tgz
+.helm/
+
+# --- Terraform (defensivo - este repo nao usa, mas evita acidentes) ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+.terraform.lock.hcl
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- SO ---
+.DS_Store
+Thumbs.db
