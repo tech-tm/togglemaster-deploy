@@ -536,6 +536,50 @@ Depois faça suas mudanças e dê `git push`. Vira hábito em 2-3 vezes.
 
 ---
 
+## Idempotência do deploy (o que persiste vs o que precisa ser recriado)
+
+Se você fizer `terraform destroy` + `Terraform Apply` novamente (ou se o Learner Lab for resetado), o que acontece:
+
+### Persiste automaticamente (vem do Git) ✅
+
+Todos esses são aplicados pelos workflows na nova rodada:
+
+- Infra Terraform (EKS, RDS, Redis, SQS, DynamoDB, ECR) — `Terraform Apply`.
+- ArgoCD + `ignoreDifferences` globais — `Install ArgoCD` aplica o `k8s/argocd/values.yaml`.
+- Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) com todos os fixes — `Observability Deploy`.
+- Microsserviços com instrumentação OTel e credenciais AWS nos deployments — `GitOps` + ArgoCD.
+- Monitor do Datadog — `Alerts Deploy`.
+- Workflow de self-healing — já versionado.
+
+### NÃO persiste no cluster (vem de fora do Git) ⚠️
+
+Essas 3 fontes de dado ficam **fora** do cluster e são materializadas pelos workflows:
+
+| Fonte | O que armazena | Quando recriar |
+|---|---|---|
+| **AWS SSM Parameter Store** | `cluster-name`, credenciais DB/Redis, Datadog api-key/app-key | **Persiste** entre sessões no AWS Academy. Só perde se alguém apagar manualmente ou se o Learner Lab for totalmente resetado. |
+| **GitHub Secrets** | Credenciais AWS da sessão | **A cada 4h** (expiração da sessão AWS Academy) |
+| **OpsGenie + Discord + Datadog webhook** | Config externa das contas SaaS | **1 vez** por conta (não expira) |
+
+### Patches manuais que fizemos no cluster — resumo
+
+Durante o troubleshooting fizemos alguns `kubectl patch` e `kubectl annotate` manuais. **Todos foram incorporados ao Git** depois, então em um novo deploy **não precisa repetir nenhum deles**. Lista pra referência:
+
+| Patch manual que foi feito | Hoje está em (versionado) |
+|---|---|
+| `kubectl patch cm argocd-cm` com `ignoreDifferences` | `k8s/argocd/values.yaml` |
+| `kubectl annotate application ... refresh=hard` | não precisa — ArgoCD sincroniza sozinho na primeira vez |
+| `kubectl rollout restart argocd-application-controller` | não precisa — pod novo nasce com config correta |
+| `kubectl rollout restart evaluation-service analytics-service` | não precisa — pod novo nasce com envs AWS do Secret |
+| `kubectl create secret datadog-secret` manual | workflow `Sync Datadog Secret from SSM` faz isso |
+| `kubectl patch argocd-cm` com `trim` ou outros | não precisa — workflow `Install ArgoCD` já blinda |
+
+### Fluxo pra um deploy do zero (ordem)
+
+Siga o `DEPLOY.md` do começo. Nenhuma etapa adicional é necessária.
+
+---
+
 ## Renovação de sessão AWS Academy (a cada 4h)
 
 A sessão AWS Academy expira após 4 horas. Quando expirar, as credenciais em
