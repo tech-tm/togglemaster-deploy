@@ -81,6 +81,39 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
+  # ----------------------------------------------------------------
+  # ignoreDifferences a nivel de Application (defensa local).
+  #
+  # O ConfigMap argocd-cm ja tem a mesma config GLOBAL via
+  # k8s/argocd/values.yaml. Repetir aqui garante que:
+  #   1. Se o patch global nao foi aplicado (ex: install ArgoCD rodou
+  #      antes do values.yaml estar no repo), esta Application nao
+  #      quebra.
+  #   2. ServerSideApply + Structured Merge Diff respeita o campo
+  #      ignorado quando combinado com RespectIgnoreDifferences=true
+  #      em syncOptions (abaixo).
+  #
+  # /status/terminatingReplicas: campo adicionado em k8s 1.33+ (feature
+  # gate DeploymentReplicaSetTerminatingReplicas) que a lib do ArgoCD
+  # (gitops-engine) ainda nao conhece.
+  # ----------------------------------------------------------------
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: ReplicaSet
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: DaemonSet
+      jsonPointers:
+        - /status/terminatingReplicas
   syncPolicy:
     automated:
       prune: true
@@ -88,3 +121,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      # RespectIgnoreDifferences=true: faz o ArgoCD aplicar os
+      # ignoreDifferences tambem durante o sync, nao so no diff.
+      # Imprescindivel quando ServerSideApply esta ligado.
+      - RespectIgnoreDifferences=true

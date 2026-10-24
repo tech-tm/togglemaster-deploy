@@ -78,7 +78,31 @@ kubectl annotate application observability -n argocd \
   argocd.argoproj.io/refresh=hard --overwrite
 ```
 
-**Clusters novos**: já vem corrigido via `k8s/argocd/values.yaml` quando o workflow `Install ArgoCD` roda.
+**Clusters novos**: já vem corrigido em **3 camadas** (defesa em profundidade):
+
+1. **Global via `k8s/argocd/values.yaml`** — `argocd-cm` com `resource.customizations.ignoreDifferences.*` quando o workflow `Install ArgoCD` roda.
+2. **Application-level `ignoreDifferences`** — cada Application de observabilidade (`kube-prometheus-stack`, `loki-stack`, `otel-collector`) tem a mesma config repetida localmente, pra sobreviver caso o global falhe ou seja sobrescrito.
+3. **`RespectIgnoreDifferences=true`** nas `syncOptions` de cada Application — garante que o ignore valha também durante o sync (`ServerSideApply`), não apenas no diff.
+
+### Se o erro aparecer mesmo com as 3 camadas
+
+Causa possível: cluster muito novo (k8s 1.34+) com outros campos novos que ainda não cobrimos. Adicione o novo campo nos 3 lugares:
+
+```bash
+# Qual campo está dando problema?
+# A mensagem de erro aponta: "<caminho>: field not declared in schema"
+# Ex: /status/<novo-campo>
+
+# 1. Patch global imediato
+kubectl patch configmap argocd-cm -n argocd --type merge -p '{
+  "data": {
+    "resource.customizations.ignoreDifferences.apps_Deployment": "jsonPointers:\n- /status/terminatingReplicas\n- /status/<novo-campo>\n"
+  }
+}'
+kubectl rollout restart statefulset argocd-application-controller -n argocd
+
+# 2. Permanentemente: adicionar nos 3 arquivos (values.yaml do argocd + 3 Applications)
+```
 
 ---
 

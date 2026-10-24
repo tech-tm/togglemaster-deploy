@@ -175,12 +175,53 @@ Duração: ~5 min.
 
 ### 3.2 Validar
 
+**Conectar o `kubectl` ao cluster** (uma vez por sessão AWS Academy; sem isso os comandos `kubectl` falham):
+
 ```bash
 aws eks update-kubeconfig --region us-east-1 --name togglemaster-eks
 
+# Testa que a conexao funciona
+kubectl get nodes
+# Esperado: 3 nodes Ready (ou 2, se ainda nao aplicou o aumento de capacidade)
+```
+
+**Checar o ArgoCD de pé:**
+
+```bash
 kubectl get pods -n argocd              # todos Running
 kubectl get applications -n argocd      # 'togglemaster' deve aparecer
 ```
+
+### 3.3 Acessar a UI do ArgoCD
+
+**a) Pegue a URL do Load Balancer** (o workflow `Install ArgoCD` configurou o Service como `LoadBalancer` — a AWS cria um ELB público):
+
+```bash
+kubectl get svc argocd-server -n argocd \
+  -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"
+```
+
+Esse hostname (algo tipo `xxxxxx.us-east-1.elb.amazonaws.com`) é o endereço da UI do ArgoCD.
+
+> O ELB demora ~1-3 min pra ficar disponível após o workflow terminar. Se o comando acima retornar vazio, aguarde e tente de novo.
+
+**b) Obtenha a senha inicial do admin** (gerada automaticamente pelo chart):
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d
+echo    # quebra de linha pra legibilidade
+```
+
+**c) Acesse pelo browser:**
+
+- URL: `http://<hostname-do-elb>` (o workflow instalou com `--insecure`, então HTTP funciona)
+- Usuário: `admin`
+- Senha: a que você acabou de recuperar no passo (b)
+
+Na UI do ArgoCD você vê as Applications sincronizando (`togglemaster` nessa fase, depois `observability`, `kube-prometheus-stack`, etc.).
+
+> **Dica de segurança**: a senha inicial fica guardada no secret `argocd-initial-admin-secret`. Em produção real, você logaria com ela, criaria usuários reais e deletaria esse secret. Pro escopo da fase, tudo bem manter.
 
 ---
 
@@ -230,9 +271,18 @@ Faça um commit vazio na branch `deploy` do `togglemaster-deploy`:
 ```bash
 cd togglemaster-deploy
 git checkout deploy
+
+# IMPORTANTE: a branch 'deploy' recebe commits automaticos dos workflows
+# docker-pipeline (quando as imagens dos microsservicos sao buildadas).
+# Antes de qualquer push manual, puxe primeiro:
+git pull --rebase origin deploy
+
 git commit --allow-empty -m "chore(deploy): trigger gitops"
 git push origin deploy
 ```
+
+> Se o push for rejeitado com `[rejected] deploy -> deploy (fetch first)`,
+> veja a seção **"Git: push rejected na branch deploy"** no final deste documento.
 
 Isso dispara o workflow **GitOps** que:
 1. Cria `togglemaster-secrets` (com credenciais Postgres, Redis, MASTER_KEY, SERVICE_API_KEY **e credenciais AWS da sessão atual**), `db-*-secret`, `redis-secret` no cluster.
@@ -406,6 +456,83 @@ graph TD
 ```
 
 Se qualquer passo falhar: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).
+
+---
+
+## Git: push rejected na branch `deploy`
+
+### Sintoma
+
+```text
+To github.com:tech-tm/togglemaster-deploy.git
+ ! [rejected]        deploy -> deploy (fetch first)
+error: failed to push some refs to 'github.com:tech-tm/togglemaster-deploy.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally.
+```
+
+### Causa
+
+Esse erro é **esperado** nesse projeto. A branch `deploy` recebe pushes
+automáticos de outros workflows:
+
+- A cada build de serviço no `togglemaster-app`, o `docker-pipeline.yml`
+  chama o `reusable-gitops.yml` que **commita a tag nova da imagem** no
+  `togglemaster-deploy/k8s/base/services/<serviço>/kustomization.yaml`.
+- Esses commits acontecem silenciosamente, sem sua intervenção.
+- Resultado: seu local fica desatualizado em relação ao remote.
+
+### Solução (rebase)
+
+**NÃO use `git push --force`** — você sobrescreveria os commits automáticos
+e perderia as tags de imagem atualizadas.
+
+```bash
+cd togglemaster-deploy
+git checkout deploy
+
+# 1) Ve o que tem no remote que você nao tem local (opcional, só pra entender)
+git fetch origin
+git log HEAD..origin/deploy --oneline
+# Esperado: 1+ commits do tipo "chore(deploy): update <servico> image to <sha>"
+
+# 2) Rebase: puxa remote primeiro, reaplica seus commits locais em cima
+git pull --rebase origin deploy
+
+# 3) Agora o push funciona
+git push origin deploy
+```
+
+### Se der conflito no rebase
+
+Pouco provável — os workflows automáticos mexem em arquivos
+`k8s/base/services/*/kustomization.yaml`, área diferente das suas edições
+manuais típicas. Mas se der:
+
+```bash
+# Lista os arquivos em conflito
+git status
+
+# Resolve manualmente (edita, mantem a versao certa), depois:
+git add <arquivos-resolvidos>
+git rebase --continue
+```
+
+Se ficar confuso ou quiser desistir do rebase e voltar ao estado anterior:
+
+```bash
+git rebase --abort
+```
+
+### Hábito recomendado
+
+Antes de qualquer push manual na branch `deploy`, **sempre** rode:
+
+```bash
+git pull --rebase origin deploy
+```
+
+Depois faça suas mudanças e dê `git push`. Vira hábito em 2-3 vezes.
 
 ---
 
