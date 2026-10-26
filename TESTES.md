@@ -327,9 +327,13 @@ Aguardar 2-3 min. Abrir Datadog UI:
 
 ---
 
-## T4 — Bloco 4: Alertas + OpsGenie + Discord + Self-Healing
+## T4 — Bloco 4: Alertas + Incident Management + ChatOps + Self-Healing
 
-Valida configuração do bloco reativo. **Depende do setup manual em contas externas (OpsGenie, Discord, Datadog webhook).**
+Valida configuração do bloco reativo. **Depende do setup manual em contas externas** (JSM+Slack ou OpsGenie+Discord, Datadog webhook).
+
+> Suporta **duas opções**:
+> - **A (recomendada)**: Jira Service Management + Slack
+> - **B (legacy)**: OpsGenie + Discord (apenas se já tem conta OpsGenie — descontinuado em abril/2027)
 
 ### T4.1 — Monitor do Datadog criado
 
@@ -371,10 +375,22 @@ python3 -c "import yaml; list(yaml.safe_load_all(open('.github/workflows/self-he
 
 ### T4.3 — Setup externo (teste visual)
 
-Verifica no painel das ferramentas:
+Verifica no painel das ferramentas conforme a opção escolhida:
+
+**Opção A — JSM + Slack:**
+
+- [ ] **JSM**: site criado (`<seunome>.atlassian.net`) + módulo Operations ativo + integração "Datadog" ativa (Settings → Operations → Integrations)
+- [ ] **Slack**: canal `#alerts` configurado + bot JSM adicionado + integração Slack ativa no JSM
+- [ ] **Datadog**: integração **Jira Service Management Ops** instalada (Integrations → busca "Jira Service Management Ops")
+
+**Opção B — OpsGenie + Discord** (legacy):
 
 - [ ] **OpsGenie**: team `togglemaster` existe + integração "Datadog" ativa (Settings → Integrations)
 - [ ] **Discord**: canal `#alerts` configurado + webhook integrado no OpsGenie
+- [ ] **Datadog**: integração **OpsGenie** instalada
+
+**Comum:**
+
 - [ ] **Datadog**: webhook `togglemaster-self-healing` configurado (Integrations → Webhooks) apontando pro `repository_dispatch` do GitHub
 
 ### T4.4 — Trigger manual do Self-Healing (teste de fumaça)
@@ -440,8 +456,12 @@ echo "✓ 500 requisições enviadas"
 Monitorar em 4 lugares em paralelo:
 
 1. **Datadog → Monitors**: o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` entra em `Alert` (vermelho).
-2. **OpsGenie → Alerts**: incidente aberto automaticamente.
-3. **Discord → canal `#alerts`**: mensagem do OpsGenie.
+2. **Incident management**: alerta/incidente aberto automaticamente:
+   - Opção A: **JSM → Operations → Alerts**
+   - Opção B: **OpsGenie → Alerts**
+3. **ChatOps**: notificação chega:
+   - Opção A: **Slack → canal `#alerts`**
+   - Opção B: **Discord → canal `#alerts`**
 4. **GitHub → `togglemaster-deploy` → Actions → Self-Healing Rollout**: run novo com `trigger: datadog-webhook`.
 
 ### T5.5 — Validar o self-healing
@@ -463,7 +483,7 @@ Durante este teste, capture:
 - [ ] **Grafana dashboard** com dados (CPU/Mem/Requests/Logs)
 - [ ] **Datadog Service Map** com os 5 serviços conectados
 - [ ] **Datadog Trace** distribuído de uma chamada `/evaluate`
-- [ ] **Discord** canal `#alerts` com a notificação do incidente
+- [ ] **ChatOps**: canal `#alerts` com a notificação do incidente (Slack na opção A, Discord na opção B)
 - [ ] **GitHub Actions** → Self-Healing Rollout → log do `kubectl rollout restart`
 
 ---

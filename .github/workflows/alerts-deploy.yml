@@ -24,6 +24,14 @@ on:
         description: 'Threshold warning (percentual)'
         required: false
         default: '3'
+      incident_handle:
+        description: 'Handle da integracao de incident management no Datadog (sem @)'
+        required: false
+        default: 'jsm_ops'
+        type: choice
+        options:
+          - jsm_ops
+          - opsgenie-togglemaster
 
 permissions:
   contents: read
@@ -77,6 +85,9 @@ jobs:
         run: |
           export THRESHOLD_PERCENT="${{ inputs.threshold_percent }}"
           export WARNING_PERCENT="${{ inputs.warning_percent }}"
+          export INCIDENT_HANDLE="${{ inputs.incident_handle }}"
+
+          echo "Usando incident handle: @$INCIDENT_HANDLE"
 
           # envsubst nao suporta aspas em numeros JSON, entao usamos sed
           # para substituir os placeholders no template, e depois convertemos

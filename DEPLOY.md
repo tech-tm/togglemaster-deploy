@@ -347,27 +347,57 @@ Depois disso, abra o **Datadog APM → Services**: os 5 serviços devem aparecer
 
 ---
 
-## Fase 6 — Alertas, OpsGenie, Discord (Bloco 4)
+## Fase 6 — Alertas, Incident Management, ChatOps (Bloco 4)
+
+Duas opções de incident management + ChatOps. Escolha **uma**:
+
+| Opção | Incident Management | ChatOps |
+|---|---|---|
+| **A (recomendada)** | Jira Service Management Operations (JSM Ops) | Slack |
+| **B (legacy, até abril/2027)** | OpsGenie | Discord |
+
+Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`](./docs/alerting.md).
 
 ### 6.1 Setup manual (uma vez, fora do GitHub)
 
-Siga o passo a passo em [`docs/alerting.md`](./docs/alerting.md), passos **2 a 4**:
+**Comum às duas opções:**
+
+- [ ] **Datadog**: criar webhook `togglemaster-self-healing` apontando pro
+  `repository_dispatch` do GitHub Actions (ver `docs/alerting.md` passo 5).
+
+**Opção A — JSM + Slack** (ver `docs/alerting.md` opção A):
+
+- [ ] Criar site JSM (`<seunome>.atlassian.net`) com template "IT Service Management".
+- [ ] JSM: adicionar integração **Datadog** → copiar API Key.
+- [ ] Datadog: instalar integração **Jira Service Management Ops** → colar a API Key.
+- [ ] JSM: adicionar integração **Slack**, autorizar o workspace, selecionar o canal `#alerts`.
+
+**Opção B — OpsGenie + Discord** (ver `docs/alerting.md` opção B — apenas se já tem conta OpsGenie):
 
 - [ ] OpsGenie: criar team `togglemaster` + integração Datadog.
 - [ ] Discord: criar webhook do canal `#alerts` + integrar no OpsGenie.
-- [ ] Datadog: criar webhook `togglemaster-self-healing` apontando pro
-  `repository_dispatch` do GitHub Actions.
 
 ### 6.2 Aplicar o Monitor
 
 **`togglemaster-deploy`** → Actions → **Alerts Deploy** → Run workflow
 
-Esse workflow lê o payload JSON versionado em `alerts/datadog/monitor-5xx-auth.json`
-e cria/atualiza o Monitor no Datadog via API.
+Inputs:
+
+| Input | Opção A (JSM) | Opção B (OpsGenie legacy) |
+|---|---|---|
+| `incident_handle` | `jsm_ops` (default) | `opsgenie-togglemaster` |
+| `threshold_percent` | `5` | `5` |
+| `warning_percent` | `3` | `3` |
+
+Esse workflow lê o payload JSON versionado em `alerts/datadog/monitor-5xx-auth.json`,
+substitui o placeholder `${INCIDENT_HANDLE}` e cria/atualiza o Monitor no Datadog via API.
 
 ### 6.3 Validar
 
 - Datadog UI → **Monitors** → o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` deve aparecer com status `OK` ou `No Data`.
+- Teste manual: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que:
+  - **Opção A**: alerta aparece no JSM (**Operations** → **Alerts**) e notificação chega no Slack `#alerts`.
+  - **Opção B**: incident aparece no OpsGenie e notificação chega no Discord `#alerts`.
 
 ---
 
