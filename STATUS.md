@@ -54,18 +54,32 @@ Isso ajuda a lembrar o que **deveria estar funcionando** no próximo deploy:
 - Todo o código nos 2 repos (`togglemaster-app`, `togglemaster-deploy`)
 - GitHub Secrets dos 2 repos (verificar que não expiraram as credenciais AWS Academy)
 
-### No AWS SSM Parameter Store (persiste entre sessões AWS Academy)
+### No AWS SSM Parameter Store
 
-- `/togglemaster/prod/cluster-name` → nome do cluster que o Terraform vai usar
-- `/togglemaster/prod/auth/credentials` → credenciais Postgres do auth
-- `/togglemaster/prod/flag/credentials` → credenciais Postgres do flag
-- `/togglemaster/prod/targeting/credentials` → credenciais Postgres do targeting
-- `/togglemaster/prod/redis/credentials` → senha do Redis
+**Atenção:** os SSM parameters do projeto se dividem em dois grupos.
+Após `terraform destroy`, apenas o grupo B sobrevive.
+
+**Grupo A — gerenciados pelo Terraform (destruídos pelo destroy):**
+
+Esses são recriados automaticamente no próximo `Terraform Apply` com valores
+novos (senhas aleatórias geradas pelo módulo `security`):
+
+- `/togglemaster/prod/auth/credentials` → gerado pela camada `security`
+- `/togglemaster/prod/flag/credentials` → idem
+- `/togglemaster/prod/targeting/credentials` → idem
+- `/togglemaster/prod/redis/credentials` → idem
+- `/togglemaster/prod/evaluation/master_key` → idem
+- `/togglemaster/prod/evaluation/service_api_key` → idem
+- `/togglemaster/prod/cluster-name` → gerado pela camada `compute`
+
+**Grupo B — criados manualmente (persistem entre destroy/apply):**
+
+Esses você cria uma vez via `aws ssm put-parameter` e eles continuam lá
+mesmo após `terraform destroy` (porque não são `aws_ssm_parameter` do Terraform):
+
 - `/togglemaster/prod/datadog/api-key` → **API Key do Datadog** (ingestão)
 - `/togglemaster/prod/datadog/app-key` → **App Key do Datadog** (gerenciamento, pro Bloco 4)
 - `/togglemaster/prod/datadog/site` → `datadoghq.com` (opcional)
-- `/togglemaster/prod/evaluation/master_key` (opcional)
-- `/togglemaster/prod/evaluation/service_api_key` (opcional)
 
 ### Em contas externas
 

@@ -50,42 +50,48 @@ Crie em cada repo:
 
 ### 0.3 Parâmetros no AWS SSM
 
-Rode no terminal (adapte os valores):
+O projeto usa dois **grupos** de SSM parameters:
+
+#### Grupo A — Criados automaticamente pelo Terraform (camada `security`)
+
+Você **não precisa criar manualmente** — o Terraform Apply gera senhas
+aleatórias e grava os valores no SSM na primeira execução:
+
+| Parâmetro | Criado por | Tipo |
+|---|---|---|
+| `/togglemaster/prod/auth/credentials` | `terraform/modules/security` | SecureString |
+| `/togglemaster/prod/flag/credentials` | idem | SecureString |
+| `/togglemaster/prod/targeting/credentials` | idem | SecureString |
+| `/togglemaster/prod/redis/credentials` | idem | SecureString |
+| `/togglemaster/prod/evaluation/master_key` | idem | SecureString |
+| `/togglemaster/prod/evaluation/service_api_key` | idem | SecureString |
+| `/togglemaster/prod/cluster-name` | `terraform/environments/prod/compute` | String |
+
+> **Importante**: esses parâmetros são **destruídos** quando você roda
+> `terraform destroy` da camada que os criou. Após um destroy completo,
+> eles reaparecem com valores novos no próximo `Terraform Apply`.
+
+#### Grupo B — Criados manualmente (Datadog)
+
+Esses você cria **uma vez** e eles persistem entre destroy/apply do Terraform
+(porque não são `aws_ssm_parameter` do Terraform — são valores que você gravou
+direto via CLI):
 
 ```bash
-# ------- Base (necessario para subir infra e microsservicos) -------
-
-# Nome do cluster EKS que o Terraform vai criar
-aws ssm put-parameter --name "/togglemaster/prod/cluster-name" \
-  --type String --value "togglemaster-eks" --overwrite
-
-# Credenciais do Postgres por serviço (JSON com username + password)
-for svc in auth flag targeting; do
-  aws ssm put-parameter --name "/togglemaster/prod/$svc/credentials" \
-    --type SecureString \
-    --value '{"username":"postgres","password":"<ESCOLHA_UMA_SENHA>"}' \
-    --overwrite
-done
-
-# Credencial do Redis (JSON com password)
-aws ssm put-parameter --name "/togglemaster/prod/redis/credentials" \
-  --type SecureString \
-  --value '{"password":"<ESCOLHA_UMA_SENHA>"}' \
-  --overwrite
-
-# ------- Datadog (Blocos 2 e 4) -------
-
 # API Key: Datadog UI → Organization Settings → API Keys → New Key
 aws ssm put-parameter --name "/togglemaster/prod/datadog/api-key" \
-  --type SecureString --value "<DD_API_KEY>" --overwrite
+  --type SecureString --value "<DD_API_KEY>" --overwrite \
+  --profile aws_fiap
 
 # App Key: Datadog UI → Organization Settings → Application Keys → New Key
 aws ssm put-parameter --name "/togglemaster/prod/datadog/app-key" \
-  --type SecureString --value "<DD_APP_KEY>" --overwrite
+  --type SecureString --value "<DD_APP_KEY>" --overwrite \
+  --profile aws_fiap
 
 # Site (opcional): default datadoghq.com. Se sua conta for us5, eu, etc, ajuste.
 aws ssm put-parameter --name "/togglemaster/prod/datadog/site" \
-  --type String --value "datadoghq.com" --overwrite
+  --type String --value "datadoghq.com" --overwrite \
+  --profile aws_fiap
 ```
 
 ### 0.4 Preflight Check (confere se tudo está no lugar)
