@@ -100,7 +100,23 @@ Se der verde ✅, prossiga. Se der ❌, veja o que falta e volte no 0.3.
 
 ## Fase 1 — Infraestrutura (Terraform)
 
-### 1.1 Rodar o Terraform Apply
+### 1.1 (opcional, mas recomendado) Verificar drift do state
+
+Antes do primeiro apply em uma sessão nova (quando o lab anterior destruiu
+recursos), vale checar se o state no S3 (`tech4-tfstates`) está alinhado
+com a AWS real:
+
+**`togglemaster-app`** → Actions → **Terraform State Check** → Run workflow
+
+- Se tudo retornar ✅ `OK` → pode pular pro 1.2.
+- Se alguma camada mostrar ⚠️ `DRIFT` → re-rode com input `auto_reconcile: true`,
+  ou simplesmente rode o `Terraform Apply` (ele reconcilia automaticamente agora).
+
+Pular esse passo não quebra nada — o `Terraform Apply` tem refresh automático
+em cada camada. Mas rodar o `Terraform State Check` primeiro dá visibilidade
+antes de qualquer mudança.
+
+### 1.2 Rodar o Terraform Apply
 
 **`togglemaster-app`** → Actions → **Terraform Apply** → Run workflow → branch `main`
 
@@ -113,7 +129,7 @@ Isso provisiona (em cascata):
 
 Duração típica: **15 a 25 minutos**.
 
-### 1.2 Validar
+### 1.3 Validar
 
 ```bash
 # Cluster EKS criado?

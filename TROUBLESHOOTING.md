@@ -30,6 +30,7 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [16. Ingress retorna 404 ao acessar endpoints dos microsserviços](#16-ingress-retorna-404-ao-acessar-endpoints-dos-microsservi%C3%A7os)
 - [17. `InvalidSignatureException` ao chamar AWS no workflow](#17-invalidsignatureexception-ao-chamar-aws-no-workflow)
 - [18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`](#18-application-togglemaster-fica-outofsync-em-specreplicas)
+- [19. Terraform: `ResourceNotFoundException` ao fazer apply](#19-terraform-resourcenotfoundexception-ao-fazer-apply)
 
 ---
 
@@ -963,6 +964,122 @@ aws sts get-caller-identity --profile aws_fiap
   **"Validar credenciais AWS (sts get-caller-identity)"** logo após
   `Configure AWS credentials`. Se as credenciais estiverem erradas, falha
   cedo com mensagem clara em vez de confundir o diagnóstico depois.
+
+---
+
+## 19. Terraform: `ResourceNotFoundException` ao fazer apply
+
+### Sintoma
+
+Workflow **Terraform Apply** falha com erro parecido com:
+
+```text
+Error: listing tags for ECR (Elastic Container Registry) Repository
+(arn:aws:ecr:...:136035252239:repository/flag-service): operation error
+ECR: ListTagsForResource, https response error StatusCode: 400,
+RepositoryNotFoundException: The repository with name 'flag-service'
+does not exist in the registry with id '136035252239'
+```
+
+Pode acontecer com **qualquer tipo de recurso AWS** (ECR, RDS, Redis,
+EKS, SQS, DynamoDB), não só ECR. A mensagem muda de nome do erro, mas
+o padrão é o mesmo: "o recurso não existe".
+
+### Causa — state drift
+
+O arquivo `terraform.tfstate` (armazenado no S3 bucket, ex: `tech4-tfstates`)
+é um **inventário** do que o Terraform acredita existir na AWS. Esse
+inventário pode ficar **desalinhado** com a realidade:
+
+```text
+State no S3:        "existe 1 ECR chamado flag-service"
+AWS de verdade:     "nao existe nenhum ECR com esse nome"
+                    (foi destruido fora do Terraform ou destroy anterior falhou)
+Terraform Apply:    tenta ler as tags do ECR → RepositoryNotFoundException
+```
+
+### Causa mais comum: destroy parcial no AWS Academy
+
+A sessão AWS Academy expira em 4h. Se um `terraform destroy` começar perto
+do fim da sessão:
+
+1. Terraform destrói recursos um por um na AWS.
+2. Sessão expira no meio.
+3. State no S3 fica em estado intermediário: alguns recursos marcados
+   como destruídos, outros como "ainda existem" (mas na AWS já foram).
+4. Próximo `apply` lê o state desatualizado e tenta operar em recursos
+   que não existem mais.
+
+### Prevenção automática (já aplicada)
+
+O workflow **Terraform Apply** foi atualizado para fazer `terraform refresh`
+antes de qualquer `apply`, em **todas as 5 camadas** (`security`, `data`,
+`platform`, `compute`, `networking`). O refresh sincroniza o state com a
+AWS real: remove do state recursos destruídos fora do Terraform.
+
+Procure por esse step em cada job:
+
+```yaml
+- name: Refresh State (detect and reconcile drift)
+  run: |
+    terraform plan -refresh-only -detailed-exitcode -out=refresh.tfplan
+    # Se detectar drift (exit code 2), aplica o refresh pra sincronizar
+```
+
+### Diagnóstico pontual (verificar sem aplicar)
+
+Existe um workflow dedicado **Terraform State Check** que apenas verifica
+drift em todas as 5 camadas, sem fazer alterações:
+
+```text
+togglemaster-app → Actions → Terraform State Check → Run workflow
+```
+
+Output: tabela no `$GITHUB_STEP_SUMMARY` mostrando qual camada tem drift.
+Com o input `auto_reconcile: true`, aplica refresh automaticamente.
+
+### Fix manual (se o workflow ainda falhar)
+
+Caso raro em que o refresh automático também falha (ex: recurso órfão
+com referência circular), remover do state manualmente:
+
+```bash
+# 1. Precisa de credenciais AWS + Terraform local
+cd togglemaster-app/terraform/environments/prod/<camada-com-problema>
+
+# 2. Init com o backend
+terraform init \
+  -backend-config="bucket=$BUCKET_STATE" \
+  -backend-config="key=prod/<camada>/terraform.tfstate" \
+  -backend-config="region=us-east-1" \
+  -reconfigure
+
+# 3. Lista os recursos no state
+terraform state list
+
+# 4. Pra cada recurso problemático, confere se existe na AWS; se não existir, remove
+# Exemplo pro ECR:
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  if ! aws ecr describe-repositories --repository-names "$svc" --profile aws_fiap >/dev/null 2>&1; then
+    echo "Removendo $svc do state (nao existe na AWS)"
+    terraform state rm "module.ecr.aws_ecr_repository.repositories[\"$svc\"]"
+  fi
+done
+
+# 5. Rodar o workflow 'Terraform Apply' normalmente — vai recriar o que faltar
+```
+
+### Por que o S3 (`tech4-tfstates`) não previne isso
+
+O S3 **só armazena** o state. Não garante que o conteúdo bate com a AWS.
+É como um cofre que guarda um inventário: se o inventário está escrito
+errado, o cofre não corrige — só mantém o papel seguro.
+
+As ferramentas que **corrigem** o conteúdo do state são:
+
+- `terraform refresh` / `terraform plan -refresh-only` — sincroniza state com AWS.
+- `terraform state rm` — remove do state recursos fantasma.
+- `terraform import` — adiciona ao state recursos que existem na AWS mas foram criados fora do Terraform.
 
 ---
 
