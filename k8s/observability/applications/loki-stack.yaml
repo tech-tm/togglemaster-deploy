@@ -52,9 +52,30 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
+  # Ignora campos de .status adicionados no k8s 1.33+ que a lib do
+  # ArgoCD (gitops-engine) ainda nao conhece. Defensa local complementar
+  # ao resource.customizations.ignoreDifferences no argocd-cm.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: ReplicaSet
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: DaemonSet
+      jsonPointers:
+        - /status/terminatingReplicas
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true

@@ -18,9 +18,50 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # Respeita ignoreDifferences durante o sync (nao so no diff).
+      # Essencial quando ha HPA mexendo em /spec/replicas: sem isso o
+      # selfHeal poderia reverter a decisao do HPA.
+      - RespectIgnoreDifferences=true
   ignoreDifferences:
+  # ConfigMap togglemaster-config: data e preenchido dinamicamente pelo
+  # workflow GitOps (endpoints RDS/Redis/SQS). ArgoCD nao deve comparar.
   - group: ""
     kind: ConfigMap
     name: togglemaster-config
     jsonPointers:
     - /data
+
+  # Deployments com HPA (evaluation e analytics): o campo /spec/replicas
+  # e gerenciado pelo HorizontalPodAutoscaler em runtime, nao pelo Git.
+  # Se o ArgoCD comparasse esse campo, ficaria OutOfSync permanentemente
+  # cada vez que o HPA ajustasse a quantidade de replicas.
+  - group: apps
+    kind: Deployment
+    name: evaluation-service
+    jsonPointers:
+    - /spec/replicas
+  - group: apps
+    kind: Deployment
+    name: analytics-service
+    jsonPointers:
+    - /spec/replicas
+
+  # Campos de .status adicionados no k8s 1.33+ que a lib do ArgoCD
+  # (gitops-engine) ainda nao conhece. Defensa local; alem disso o
+  # argocd-cm global ja ignora via resource.customizations.
+  - group: apps
+    kind: Deployment
+    jsonPointers:
+    - /status/terminatingReplicas
+  - group: apps
+    kind: StatefulSet
+    jsonPointers:
+    - /status/terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jsonPointers:
+    - /status/terminatingReplicas
+  - group: apps
+    kind: DaemonSet
+    jsonPointers:
+    - /status/terminatingReplicas

@@ -21,18 +21,72 @@ jobs:
         with:
           ref: deploy
 
+      # Sanitiza os secrets: remove qualquer whitespace/newline que tenha
+      # sido colado por acidente ao copiar as credenciais do AWS Academy.
+      # Um unico \n no final de AWS_SECRET_ACCESS_KEY e suficiente para
+      # gerar InvalidSignatureException em todas as chamadas AWS CLI.
+      - name: Sanitize AWS credentials (trim whitespace/newlines)
+        id: aws_creds
+        env:
+          RAW_AKI: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          RAW_SAK: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RAW_TOK: ${{ secrets.AWS_SESSION_TOKEN }}
+          RAW_REG: ${{ secrets.AWS_REGION }}
+        run: |
+          # 'tr -d' remove todos os \r, \n, espaco e tab do valor
+          AKI=$(printf '%s' "$RAW_AKI" | tr -d '\r\n \t')
+          SAK=$(printf '%s' "$RAW_SAK" | tr -d '\r\n \t')
+          TOK=$(printf '%s' "$RAW_TOK" | tr -d '\r\n \t')
+          REG=$(printf '%s' "${RAW_REG:-us-east-1}" | tr -d '\r\n \t')
+
+          # Marca os valores limpos para que o GitHub Actions os censure no log
+          echo "::add-mask::$AKI"
+          echo "::add-mask::$SAK"
+          echo "::add-mask::$TOK"
+
+          # Confere comprimentos esperados (nao mostra valor, so tamanho)
+          echo "AWS_ACCESS_KEY_ID len     : ${#AKI} (esperado: 20 para AKIA* ou 21 para ASIA*)"
+          echo "AWS_SECRET_ACCESS_KEY len : ${#SAK} (esperado: 40)"
+          echo "AWS_SESSION_TOKEN len     : ${#TOK} (esperado: ~600-900)"
+          echo "AWS_REGION                : $REG"
+
+          # Falha cedo se algum vier vazio ou claramente errado
+          if [ ${#AKI} -lt 16 ] || [ ${#SAK} -lt 30 ]; then
+            echo "::error::Credenciais AWS parecem invalidas/vazias apos trim."
+            exit 1
+          fi
+
+          # Exporta para os proximos steps via outputs
+          echo "aki=$AKI" >> $GITHUB_OUTPUT
+          echo "sak=$SAK" >> $GITHUB_OUTPUT
+          echo "tok=$TOK" >> $GITHUB_OUTPUT
+          echo "reg=$REG" >> $GITHUB_OUTPUT
+
+      # Configure AWS credentials DEVE vir ANTES de qualquer chamada 'aws'.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ steps.aws_creds.outputs.aki }}
+          aws-secret-access-key: ${{ steps.aws_creds.outputs.sak }}
+          aws-session-token:     ${{ steps.aws_creds.outputs.tok }}
+          aws-region:            ${{ steps.aws_creds.outputs.reg }}
+
+      - name: Validar credenciais AWS (sts get-caller-identity)
+        run: |
+          # Falha cedo com mensagem clara se as credenciais estiverem
+          # desalinhadas (comum: renovou lab e atualizou so uma das 3).
+          if ! aws sts get-caller-identity > /tmp/identity.json 2>&1; then
+            echo "::error::Credenciais AWS invalidas. Veja TROUBLESHOOTING.md secoes 8 e 17."
+            cat /tmp/identity.json
+            exit 1
+          fi
+          echo "✓ Credenciais AWS validas"
+          cat /tmp/identity.json
+
       - name: Get cluster name from SSM
         run: |
           CLUSTER_NAME=$(aws ssm get-parameter --name "/togglemaster/prod/cluster-name" --query "Parameter.Value" --output text)
           echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
         run: |
@@ -44,17 +98,60 @@ jobs:
           version: 'v3.14.0'
 
       - name: Install ArgoCD via Helm
+        id: helm
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
           helm repo update
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+          # Limpa jobs orfaos de pre-upgrade de execucoes anteriores que
+          # podem travar o novo helm upgrade.
+          kubectl delete jobs -n argocd \
+            -l app.kubernetes.io/instance=argocd \
+            --ignore-not-found=true
+
+          # Values em k8s/argocd/values.yaml incluem:
+          #   - LoadBalancer + modo insecure (AWS Academy)
+          #   - ignoreDifferences globais para campos novos do k8s 1.33+
+          #     (ex: .status.terminatingReplicas) que o diff do ArgoCD
+          #     ainda nao conhece.
+          #
+          # --timeout 15m: o default do Helm (5m) e pouco para o chart
+          # inteiro do ArgoCD subir no AWS Academy (imagens grandes +
+          # scheduling em t3.medium).
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --version 7.8.0 \
-            --set server.service.type=LoadBalancer \
-            --set server.extraArgs[0]=--insecure \
-            --set configs.params."server\.insecure"=true \
+            -f k8s/argocd/values.yaml \
+            --timeout 15m \
             --wait
+
+      - name: Diagnostico (so roda se o Helm falhar)
+        if: failure() && steps.helm.outcome == 'failure'
+        run: |
+          echo "=== helm status ==="
+          helm status argocd -n argocd || true
+          echo
+          echo "=== helm history ==="
+          helm history argocd -n argocd || true
+          echo
+          echo "=== Pods nao-Running no namespace argocd ==="
+          kubectl get pods -n argocd --field-selector=status.phase!=Running -o wide || true
+          echo
+          echo "=== Jobs no namespace argocd ==="
+          kubectl get jobs -n argocd || true
+          echo
+          echo "=== PVCs no namespace argocd ==="
+          kubectl get pvc -n argocd || true
+          echo
+          echo "=== Ultimos 40 events ==="
+          kubectl get events -n argocd --sort-by='.lastTimestamp' | tail -40 || true
+          echo
+          echo "=== Descrevendo pods com problema ==="
+          for pod in $(kubectl get pods -n argocd --field-selector=status.phase!=Running -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe "$pod" -n argocd | tail -30 || true
+          done
 
       - name: Create namespace togglemaster
         run: |

@@ -52,6 +52,26 @@ spec:
             configMapKeyRef:
               name: togglemaster-config
               key: AWS_REGION
+        # Credenciais AWS da sessao do AWS Academy (sincronizadas pelo
+        # secrets-sync.yml). Necessarias para o boto3 autenticar ao chamar
+        # SQS ReceiveMessage/DeleteMessage e DynamoDB PutItem. No AWS
+        # Academy nao podemos usar IRSA (criar IAM Role novo), entao
+        # passamos credenciais estaticas.
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_SESSION_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: togglemaster-secrets
+              key: AWS_SESSION_TOKEN
         # ---------- OpenTelemetry (Fase 4 - Bloco 3) ----------
         - name: OTEL_SERVICE_NAME
           value: "analytics-service"

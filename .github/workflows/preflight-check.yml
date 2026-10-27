@@ -1,0 +1,225 @@
+name: Preflight Check
+
+# ----------------------------------------------------------------------
+# Verifica rapidamente se o ambiente esta pronto para rodar os deploys.
+#
+# Checagens:
+#   1. Credenciais AWS validas (sts get-caller-identity).
+#   2. Parametros SSM obrigatorios existem.
+#   3. Parametros SSM opcionais (loga se faltarem, nao falha).
+#   4. Cluster EKS acessivel (se existir).
+#
+# Nao modifica NADA. E seguro rodar quantas vezes quiser.
+#
+# Deve ser o PRIMEIRO workflow a rodar depois de atualizar as credenciais
+# do AWS Academy. Se qualquer item obrigatorio falhar, o workflow retorna
+# codigo nao-zero e lista claramente o que esta faltando.
+# ----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  check:
+    name: Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ================================================================
+      # 1. Credenciais AWS
+      # ================================================================
+      - name: Credenciais AWS validas
+        id: aws_identity
+        run: |
+          IDENTITY=$(aws sts get-caller-identity 2>&1) || {
+            echo "::error::Falha ao chamar sts get-caller-identity. Credenciais invalidas ou expiradas."
+            echo "$IDENTITY"
+            exit 1
+          }
+          ACCOUNT=$(echo "$IDENTITY" | jq -r '.Account')
+          ARN=$(echo "$IDENTITY" | jq -r '.Arn')
+          echo "✓ Credenciais AWS validas."
+          echo "  Account: $ACCOUNT"
+          echo "  ARN:     $ARN"
+          echo "account=$ACCOUNT" >> $GITHUB_OUTPUT
+          echo "arn=$ARN"         >> $GITHUB_OUTPUT
+
+      # ================================================================
+      # 2. SSM obrigatorios (base - necessarios para subir qualquer coisa)
+      # ================================================================
+      - name: SSM obrigatorios (base)
+        id: ssm_base
+        run: |
+          set +e
+          FAIL=0
+          REQUIRED=(
+            "/togglemaster/prod/cluster-name"
+            "/togglemaster/prod/auth/credentials"
+            "/togglemaster/prod/flag/credentials"
+            "/togglemaster/prod/targeting/credentials"
+            "/togglemaster/prod/redis/credentials"
+          )
+
+          echo "## SSM base" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametro | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for p in "${REQUIRED[@]}"; do
+            if aws ssm get-parameter --name "$p" >/dev/null 2>&1; then
+              echo "✓ $p"
+              echo "| \`$p\` | ✅ |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✗ $p  (FALTANDO)"
+              echo "| \`$p\` | ❌ FALTANDO |" >> $GITHUB_STEP_SUMMARY
+              FAIL=$((FAIL + 1))
+            fi
+          done
+
+          if [ $FAIL -gt 0 ]; then
+            echo "::error::$FAIL parametro(s) SSM obrigatorio(s) faltando. Veja DEPLOY.md secao 'SSM Parameters'."
+            exit 1
+          fi
+
+      # ================================================================
+      # 3. SSM obrigatorios (observabilidade + alertas - Blocos 2 e 4)
+      # ================================================================
+      - name: SSM obrigatorios (Datadog)
+        id: ssm_datadog
+        run: |
+          set +e
+          FAIL=0
+          REQUIRED=(
+            "/togglemaster/prod/datadog/api-key"
+            "/togglemaster/prod/datadog/app-key"
+          )
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## SSM Datadog (Blocos 2 e 4)" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametro | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for p in "${REQUIRED[@]}"; do
+            if aws ssm get-parameter --name "$p" --with-decryption >/dev/null 2>&1; then
+              echo "✓ $p"
+              echo "| \`$p\` | ✅ |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✗ $p  (FALTANDO)"
+              echo "| \`$p\` | ❌ FALTANDO |" >> $GITHUB_STEP_SUMMARY
+              FAIL=$((FAIL + 1))
+            fi
+          done
+
+          if [ $FAIL -gt 0 ]; then
+            echo "::error::$FAIL parametro(s) SSM do Datadog faltando. Veja docs/alerting.md."
+            exit 1
+          fi
+
+      # ================================================================
+      # 4. SSM opcionais (nao falha se faltar)
+      # ================================================================
+      - name: SSM opcionais
+        run: |
+          set +e
+          OPTIONAL=(
+            "/togglemaster/prod/datadog/site:(default datadoghq.com)"
+            "/togglemaster/prod/evaluation/master_key:(default 'default-master-key')"
+            "/togglemaster/prod/evaluation/service_api_key:(default 'default-service-api-key')"
+          )
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## SSM opcionais" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametro | Status | Fallback |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for entry in "${OPTIONAL[@]}"; do
+            p="${entry%%:*}"
+            fallback="${entry#*:}"
+            if aws ssm get-parameter --name "$p" >/dev/null 2>&1; then
+              echo "✓ $p"
+              echo "| \`$p\` | ✅ | — |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- $p  (nao definido; vai usar: $fallback)"
+              echo "| \`$p\` | ⚠️ nao definido | $fallback |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      # ================================================================
+      # 5. Cluster EKS acessivel (opcional - so se ja existir)
+      # ================================================================
+      - name: Cluster EKS acessivel
+        continue-on-error: true
+        run: |
+          CLUSTER_NAME=$(aws ssm get-parameter \
+            --name "/togglemaster/prod/cluster-name" \
+            --query "Parameter.Value" --output text 2>/dev/null)
+
+          if [ -z "$CLUSTER_NAME" ]; then
+            echo "⚠️  cluster-name nao esta no SSM (checado no passo anterior)."
+            exit 0
+          fi
+
+          if ! aws eks describe-cluster --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "⚠️  Cluster '$CLUSTER_NAME' ainda nao existe na AWS."
+            echo "    Rode 'Terraform Apply' no togglemaster-app antes dos proximos deploys."
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## Cluster EKS" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Cluster \`$CLUSTER_NAME\` ainda nao existe." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          STATUS=$(aws eks describe-cluster --name "$CLUSTER_NAME" --query 'cluster.status' --output text)
+          VERSION=$(aws eks describe-cluster --name "$CLUSTER_NAME" --query 'cluster.version' --output text)
+          echo "✓ Cluster '$CLUSTER_NAME' existe (status=$STATUS, k8s=$VERSION)"
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Cluster EKS" >> $GITHUB_STEP_SUMMARY
+          echo "| Nome | Status | Versao |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| $CLUSTER_NAME | $STATUS | $VERSION |" >> $GITHUB_STEP_SUMMARY
+
+          # Testa kubectl
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" >/dev/null
+          if kubectl get nodes >/dev/null 2>&1; then
+            NODES=$(kubectl get nodes --no-headers | wc -l)
+            echo "✓ kubectl funciona ($NODES nodes)"
+          else
+            echo "⚠️  Cluster existe mas kubectl nao conseguiu listar nodes."
+          fi
+
+      - name: Resumo final
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ✅ Preflight OK
+
+          Ambiente pronto para rodar o deploy. Siga a ordem de \`DEPLOY.md\`.
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ❌ Preflight FALHOU
+
+          Corrija os itens marcados com ❌ acima e rode novamente.
+          Guia completo: \`DEPLOY.md\` + \`TROUBLESHOOTING.md\`.
+          EOF
+          fi
