@@ -153,6 +153,32 @@ spec:
             debug:
               verbosity: basic
 
+          # ----------------------------------------------------------------
+          # Connectors: componentes que atuam como "exporter" em uma pipeline
+          # e "receiver" em outra. Essenciais para o Datadog APM funcionar
+          # 100% com OTel Collector (sem Datadog Agent).
+          #
+          # Sem o datadog/connector, o exporter envia apenas spans brutos ao
+          # Datadog. Faltam entao as "APM Stats" (contadores agregados por
+          # service+operation) que alimentam:
+          #   - Service Map (setas entre servicos)
+          #   - Metricas trace.http.request.hits / .errors / .duration
+          #   - Monitores tradicionais de APM (ex: 5xx > 5%)
+          # ----------------------------------------------------------------
+          connectors:
+            datadog/connector:
+              traces:
+                # Computa hits/errors/duration agregados por span kind
+                # (server, client, producer, consumer, internal).
+                compute_stats_by_span_kind: true
+                # Agrega por tags de "peer" (ex: peer.service, net.peer.name)
+                # para que o Datadog monte o grafo de dependencias do
+                # Service Map a partir dos spans client-side.
+                peer_tags_aggregation: true
+                # Marca como top-level os spans conforme o span kind,
+                # alinhado com o modelo APM do Datadog.
+                compute_top_level_by_span_kind: true
+
           service:
             # NOTA: a chave service.telemetry.metrics.address foi removida
             # no OpenTelemetry Collector >= v0.123 (migracao para o padrao
@@ -169,12 +195,20 @@ spec:
             #                 port: 8888
             # Hoje nao precisamos delas (nao sao requisito da Fase 4).
             pipelines:
+              # Spans vao em dois destinos:
+              #   - datadog exporter  -> envia os spans crus (Trace Explorer)
+              #   - datadog/connector -> computa APM Stats a partir dos spans
+              #                          e as emite como metricas no pipeline
+              #                          abaixo (Service Map + trace.* metrics)
               traces:
                 receivers: [otlp]
                 processors: [memory_limiter, k8sattributes, resource, batch]
-                exporters: [datadog]
+                exporters: [datadog, datadog/connector]
+              # O connector atua aqui como "receiver" adicional, injetando
+              # as APM Stats no fluxo de metricas. O exporter datadog recebe
+              # entao: metricas OTLP das apps + APM Stats do connector.
               metrics:
-                receivers: [otlp]
+                receivers: [otlp, datadog/connector]
                 processors: [memory_limiter, k8sattributes, resource, batch]
                 exporters: [datadog, prometheus]
               logs:
