@@ -109,16 +109,21 @@ jobs:
       - name: Procurar monitor existente pelo nome
         id: find
         run: |
-          NAME=$(python3 -c "import json; print(json.load(open('/tmp/monitor.json'))['name'])")
+          set -euo pipefail
+
+          NAME=$(jq -r '.name' /tmp/monitor.json)
           echo "Buscando monitor: $NAME"
 
+          # URL-encode do nome para o query string (jq -sRr @uri)
+          NAME_ENC=$(printf '%s' "$NAME" | jq -sRr @uri)
+
           # Lista monitores filtrando pelo nome (API aceita 'name' como filtro parcial)
-          RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.$DD_SITE/api/v1/monitor?name=${NAME// /%20}" \
+          RESPONSE=$(curl -sS -w "\n%{http_code}" "https://api.$DD_SITE/api/v1/monitor?name=$NAME_ENC" \
             -H "DD-API-KEY: $DD_API_KEY" \
             -H "DD-APPLICATION-KEY: $DD_APP_KEY")
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::GET monitor retornou HTTP $HTTP_CODE"
@@ -126,26 +131,23 @@ jobs:
             exit 1
           fi
 
-          # Procura match exato pelo campo 'name'
-          MONITOR_ID=$(echo "$BODY" | python3 -c "
-          import json, sys, os
-          target = os.environ['NAME']
-          data = json.load(sys.stdin)
-          matches = [m for m in data if m.get('name') == target]
-          print(matches[0]['id'] if matches else '')
-          " NAME="$NAME")
+          # Match exato pelo campo 'name' (API faz filtro parcial, aqui refinamos)
+          MONITOR_ID=$(printf '%s' "$BODY" | jq -r --arg n "$NAME" \
+            'if type=="array" then (map(select(.name==$n)) | (.[0].id // "")) else "" end')
 
           if [ -n "$MONITOR_ID" ]; then
             echo "✓ Monitor existente encontrado: ID $MONITOR_ID"
-            echo "monitor_id=$MONITOR_ID" >> $GITHUB_OUTPUT
+            echo "monitor_id=$MONITOR_ID" >> "$GITHUB_OUTPUT"
           else
             echo "✓ Nenhum monitor existente com esse nome; sera criado."
-            echo "monitor_id=" >> $GITHUB_OUTPUT
+            echo "monitor_id=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Criar ou atualizar monitor
         id: apply
         run: |
+          set -euo pipefail
+
           MONITOR_ID="${{ steps.find.outputs.monitor_id }}"
 
           if [ -n "$MONITOR_ID" ]; then
@@ -158,24 +160,24 @@ jobs:
             URL="https://api.$DD_SITE/api/v1/monitor"
           fi
 
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X "$METHOD" "$URL" \
+          RESPONSE=$(curl -sS -w "\n%{http_code}" -X "$METHOD" "$URL" \
             -H "DD-API-KEY: $DD_API_KEY" \
             -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
             -H "Content-Type: application/json" \
             -d @/tmp/monitor.json)
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
           if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
             echo "::error::$METHOD monitor retornou HTTP $HTTP_CODE"
-            echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            printf '%s' "$BODY" | jq . || printf '%s\n' "$BODY"
             exit 1
           fi
 
-          FINAL_ID=$(echo "$BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          FINAL_ID=$(printf '%s' "$BODY" | jq -r '.id')
           echo "✓ Monitor aplicado: ID $FINAL_ID"
-          echo "monitor_id=$FINAL_ID" >> $GITHUB_OUTPUT
+          echo "monitor_id=$FINAL_ID" >> "$GITHUB_OUTPUT"
 
       - name: Resumo
         if: always()
