@@ -69,7 +69,7 @@ images:
   newTag: 1855659e6531405c0b670f264ac5c91da71ef964
 - name: evaluation-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/evaluation-service
-  newTag: 4645dc990131306677b273b59be4c2ddb42a6b2c
+  newTag: 1855659e6531405c0b670f264ac5c91da71ef964
 - name: flag-service
   newName: 136035252239.dkr.ecr.us-east-1.amazonaws.com/flag-service
   newTag: 1855659e6531405c0b670f264ac5c91da71ef964
