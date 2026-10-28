@@ -187,4 +187,4 @@ kubectl port-forward -n observability svc/kube-prometheus-stack-grafana 3000:80
 ## Próximos blocos
 
 - **Bloco 3** — Instrumentação OTel dos 5 microsserviços no `togglemaster-app`.
-- **Bloco 4** — Alertas (5xx > 5%) + OpsGenie + Discord + Self-Healing.
+- **Bloco 4** — Alertas (5xx > 5%) + Jira Service Management + Slack + Self-Healing.

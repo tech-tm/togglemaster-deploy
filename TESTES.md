@@ -19,7 +19,7 @@ da plataforma, por bloco técnico da Fase 4.
 - [T1 — Bloco 1: Prometheus + Grafana + Loki + Dashboard](#t1--bloco-1-prometheus--grafana--loki--dashboard)
 - [T2 — Bloco 2: OTel Collector](#t2--bloco-2-otel-collector)
 - [T3 — Bloco 3: Instrumentação + APM + Service Map](#t3--bloco-3-instrumentação--apm--service-map)
-- [T4 — Bloco 4: Alertas + OpsGenie + Discord + Self-Healing](#t4--bloco-4-alertas--opsgenie--discord--self-healing)
+- [T4 — Bloco 4: Alertas + JSM + Slack + Self-Healing](#t4--bloco-4-alertas--incident-management--chatops--self-healing)
 - [T5 — Teste end-to-end (incidente proposital + self-healing)](#t5--teste-end-to-end-incidente-proposital--self-healing)
 - [Script tudo-em-um (smoke test rápido)](#script-tudo-em-um-smoke-test-rápido)
 
@@ -329,11 +329,7 @@ Aguardar 2-3 min. Abrir Datadog UI:
 
 ## T4 — Bloco 4: Alertas + Incident Management + ChatOps + Self-Healing
 
-Valida configuração do bloco reativo. **Depende do setup manual em contas externas** (JSM+Slack ou OpsGenie+Discord, Datadog webhook).
-
-> Suporta **duas opções**:
-> - **A (recomendada)**: Jira Service Management + Slack
-> - **B (legacy)**: OpsGenie + Discord (apenas se já tem conta OpsGenie — descontinuado em abril/2027)
+Valida configuração do bloco reativo. **Depende do setup manual em contas externas** (Jira Service Management + Slack + Datadog webhook).
 
 ### T4.1 — Monitor do Datadog criado
 
@@ -375,22 +371,11 @@ python3 -c "import yaml; list(yaml.safe_load_all(open('.github/workflows/self-he
 
 ### T4.3 — Setup externo (teste visual)
 
-Verifica no painel das ferramentas conforme a opção escolhida:
-
-**Opção A — JSM + Slack:**
+Verifica no painel das ferramentas:
 
 - [ ] **JSM**: site criado (`<seunome>.atlassian.net`) + módulo Operations ativo + integração "Datadog" ativa (Settings → Operations → Integrations)
 - [ ] **Slack**: canal `#alerts` configurado + bot JSM adicionado + integração Slack ativa no JSM
 - [ ] **Datadog**: integração **Jira Service Management Ops** instalada (Integrations → busca "Jira Service Management Ops")
-
-**Opção B — OpsGenie + Discord** (legacy):
-
-- [ ] **OpsGenie**: team `togglemaster` existe + integração "Datadog" ativa (Settings → Integrations)
-- [ ] **Discord**: canal `#alerts` configurado + webhook integrado no OpsGenie
-- [ ] **Datadog**: integração **OpsGenie** instalada
-
-**Comum:**
-
 - [ ] **Datadog**: webhook `togglemaster-self-healing` configurado (Integrations → Webhooks) apontando pro `repository_dispatch` do GitHub
 
 ### T4.4 — Trigger manual do Self-Healing (teste de fumaça)
@@ -417,7 +402,7 @@ kubectl rollout history deployment auth-service -n togglemaster | tail -5
 
 ## T5 — Teste end-to-end (incidente proposital + self-healing)
 
-**Esse é o teste decisivo para o vídeo da entrega.** Causa falha proposital no cluster, observa alerta disparar, OpsGenie abrir incidente, Discord notificar e o self-healing agir.
+**Esse é o teste decisivo para o vídeo da entrega.** Causa falha proposital no cluster, observa alerta disparar, JSM abrir alerta, Slack notificar e o self-healing agir.
 
 ### T5.1 — Preparação
 
@@ -456,12 +441,8 @@ echo "✓ 500 requisições enviadas"
 Monitorar em 4 lugares em paralelo:
 
 1. **Datadog → Monitors**: o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` entra em `Alert` (vermelho).
-2. **Incident management**: alerta/incidente aberto automaticamente:
-   - Opção A: **JSM → Operations → Alerts**
-   - Opção B: **OpsGenie → Alerts**
-3. **ChatOps**: notificação chega:
-   - Opção A: **Slack → canal `#alerts`**
-   - Opção B: **Discord → canal `#alerts`**
+2. **JSM → Operations → Alerts**: alerta aberto automaticamente.
+3. **Slack → canal `#alerts`**: notificação chega via integração JSM.
 4. **GitHub → `togglemaster-deploy` → Actions → Self-Healing Rollout**: run novo com `trigger: datadog-webhook`.
 
 ### T5.5 — Validar o self-healing
@@ -483,7 +464,7 @@ Durante este teste, capture:
 - [ ] **Grafana dashboard** com dados (CPU/Mem/Requests/Logs)
 - [ ] **Datadog Service Map** com os 5 serviços conectados
 - [ ] **Datadog Trace** distribuído de uma chamada `/evaluate`
-- [ ] **ChatOps**: canal `#alerts` com a notificação do incidente (Slack na opção A, Discord na opção B)
+- [ ] **Slack** canal `#alerts` com a notificação do incidente (via JSM)
 - [ ] **GitHub Actions** → Self-Healing Rollout → log do `kubectl rollout restart`
 
 ---

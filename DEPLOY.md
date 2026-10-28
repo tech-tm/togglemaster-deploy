@@ -12,8 +12,8 @@ veja [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).
 
 - [ ] Conta **AWS Academy** com Learner Lab ativo.
 - [ ] Conta **Datadog** (plano gratuito for education).
-- [ ] Conta **OpsGenie** (plano free, 5 usuários).
-- [ ] Servidor **Discord** com um canal `#alerts`.
+- [ ] Conta **Jira Service Management** (plano free, até 3 agents) com módulo Operations ativo.
+- [ ] Workspace **Slack** com um canal `#alerts`.
 - [ ] AWS CLI, kubectl, helm, jq instalados localmente.
 
 ---
@@ -349,45 +349,31 @@ Depois disso, abra o **Datadog APM → Services**: os 5 serviços devem aparecer
 
 ## Fase 6 — Alertas, Incident Management, ChatOps (Bloco 4)
 
-Duas opções de incident management + ChatOps. Escolha **uma**:
-
-| Opção | Incident Management | ChatOps |
-|---|---|---|
-| **A (recomendada)** | Jira Service Management Operations (JSM Ops) | Slack |
-| **B (legacy, até abril/2027)** | OpsGenie | Discord |
+Stack: **Jira Service Management Operations (JSM Ops)** para incident
+management + **Slack** para ChatOps.
 
 Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`](./docs/alerting.md).
 
 ### 6.1 Setup manual (uma vez, fora do GitHub)
 
-**Comum às duas opções:**
-
 - [ ] **Datadog**: criar webhook `togglemaster-self-healing` apontando pro
   `repository_dispatch` do GitHub Actions (ver `docs/alerting.md` passo 5).
-
-**Opção A — JSM + Slack** (ver `docs/alerting.md` opção A):
-
 - [ ] Criar site JSM (`<seunome>.atlassian.net`) com template "IT Service Management".
 - [ ] JSM: adicionar integração **Datadog** → copiar API Key.
 - [ ] Datadog: instalar integração **Jira Service Management Ops** → colar a API Key.
 - [ ] JSM: adicionar integração **Slack**, autorizar o workspace, selecionar o canal `#alerts`.
 
-**Opção B — OpsGenie + Discord** (ver `docs/alerting.md` opção B — apenas se já tem conta OpsGenie):
-
-- [ ] OpsGenie: criar team `togglemaster` + integração Datadog.
-- [ ] Discord: criar webhook do canal `#alerts` + integrar no OpsGenie.
-
 ### 6.2 Aplicar o Monitor
 
 **`togglemaster-deploy`** → Actions → **Alerts Deploy** → Run workflow
 
-Inputs:
+Inputs (todos têm default sensato):
 
-| Input | Opção A (JSM) | Opção B (OpsGenie legacy) |
-|---|---|---|
-| `incident_handle` | `jsm_ops` (default) | `opsgenie-togglemaster` |
-| `threshold_percent` | `5` | `5` |
-| `warning_percent` | `3` | `3` |
+| Input | Default |
+|---|---|
+| `incident_handle` | `jsm_ops` |
+| `threshold_percent` | `5` |
+| `warning_percent` | `3` |
 
 Esse workflow lê o payload JSON versionado em `alerts/datadog/monitor-5xx-auth.json`,
 substitui o placeholder `${INCIDENT_HANDLE}` e cria/atualiza o Monitor no Datadog via API.
@@ -395,9 +381,7 @@ substitui o placeholder `${INCIDENT_HANDLE}` e cria/atualiza o Monitor no Datado
 ### 6.3 Validar
 
 - Datadog UI → **Monitors** → o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` deve aparecer com status `OK` ou `No Data`.
-- Teste manual: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que:
-  - **Opção A**: alerta aparece no JSM (**Operations** → **Alerts**) e notificação chega no Slack `#alerts`.
-  - **Opção B**: incident aparece no OpsGenie e notificação chega no Discord `#alerts`.
+- Teste manual: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que o alerta aparece no JSM (**Operations** → **Alerts**) e a notificação chega no Slack `#alerts`.
 
 ---
 
@@ -458,8 +442,8 @@ wait
 Dentro de **~5 min**, observe:
 
 1. **Datadog Monitor** entra em `Alert` (status vermelho).
-2. **OpsGenie** abre um incidente (visível no dashboard do OpsGenie).
-3. **Discord** canal `#alerts` recebe notificação (via integração OpsGenie).
+2. **JSM Operations** abre um alerta (visível em **Operations** → **Alerts** do JSM).
+3. **Slack** canal `#alerts` recebe notificação (via integração JSM).
 4. **GitHub Actions** → `togglemaster-deploy` → workflow **Self-Healing Rollout** roda.
 5. O workflow executa `kubectl rollout restart deployment/auth-service`.
 
@@ -470,7 +454,7 @@ Capture durante o passo 7.2:
 - [ ] Dashboard do Grafana aberto, dados fluindo.
 - [ ] Datadog APM → Service Map com os 5 serviços.
 - [ ] Datadog APM → Trace distribuído de uma chamada `/evaluate`.
-- [ ] Discord `#alerts` com a notificação do incidente.
+- [ ] Slack `#alerts` com a notificação do incidente (vinda do JSM).
 - [ ] GitHub Actions → run do **Self-Healing Rollout** → log do `kubectl rollout restart`.
 
 ### 7.4 Restaurar
@@ -501,7 +485,7 @@ graph TD
     E --> F[4.1 Observability Deploy]
     F --> G[4.2 Sync Datadog Secret]
     G --> H[5. GitOps push]
-    H --> I[6.1 Setup OpsGenie/Discord manual]
+    H --> I[6.1 Setup JSM/Slack manual]
     I --> J[6.2 Alerts Deploy]
     J --> K[7. Teste end-to-end + prints]
     K --> L[8. Vídeo + Relatório]
@@ -611,7 +595,7 @@ Essas 3 fontes de dado ficam **fora** do cluster e são materializadas pelos wor
 |---|---|---|
 | **AWS SSM Parameter Store** | `cluster-name`, credenciais DB/Redis, Datadog api-key/app-key | **Persiste** entre sessões no AWS Academy. Só perde se alguém apagar manualmente ou se o Learner Lab for totalmente resetado. |
 | **GitHub Secrets** | Credenciais AWS da sessão | **A cada 4h** (expiração da sessão AWS Academy) |
-| **OpsGenie + Discord + Datadog webhook** | Config externa das contas SaaS | **1 vez** por conta (não expira) |
+| **JSM + Slack + Datadog webhook** | Config externa das contas SaaS | **1 vez** por conta (não expira) |
 
 ### Patches manuais que fizemos no cluster — resumo
 

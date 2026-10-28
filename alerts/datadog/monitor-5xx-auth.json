@@ -21,7 +21,7 @@
     "require_full_window": false,
     "evaluation_delay": 60,
     "include_tags": true,
-    "escalation_message": "O alerta ainda está ativo. Verifique o self-healing e o incidente no OpsGenie.",
+    "escalation_message": "O alerta ainda está ativo. Verifique o self-healing e o alerta no JSM.",
     "new_host_delay": 300
   },
   "priority": 1

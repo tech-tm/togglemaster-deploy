@@ -498,7 +498,7 @@ dashboards, etc.).
 
 ### Sintoma
 
-Monitor do Datadog entra em `Alert`, OpsGenie abre incidente, Discord notifica —
+Monitor do Datadog entra em `Alert`, JSM abre alerta, Slack notifica —
 mas o workflow `Self-Healing Rollout` **não roda**.
 
 ### Causa

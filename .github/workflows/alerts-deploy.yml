@@ -25,13 +25,10 @@ on:
         required: false
         default: '3'
       incident_handle:
-        description: 'Handle da integracao de incident management no Datadog (sem @)'
+        description: 'Handle da integracao de incident management no Datadog (sem @). Default: Jira Service Management Ops.'
         required: false
         default: 'jsm_ops'
-        type: choice
-        options:
-          - jsm_ops
-          - opsgenie-togglemaster
+        type: string
 
 permissions:
   contents: read
@@ -201,8 +198,8 @@ jobs:
 
           ## Próximos passos
 
-          - Configure as integrações **@opsgenie-togglemaster** e
-            **@webhook-togglemaster-self-healing** no painel do Datadog
+          - Configure as integrações **@jsm_ops** (Jira Service Management)
+            e **@webhook-togglemaster-self-healing** no painel do Datadog
             (ver \`docs/alerting.md\`), caso ainda não existam.
           - Para testar sem causar incidente real, use o botão
             **"Resolve"** → **"Trigger"** no próprio monitor.
