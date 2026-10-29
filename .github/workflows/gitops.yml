@@ -73,7 +73,7 @@ jobs:
             --from-literal=REDIS_ENDPOINT="$REDIS_ENDPOINT" \
             --from-literal=AWS_REGION="$AWS_REGION" \
             --from-literal=AWS_SQS_URL="https://sqs.$AWS_REGION.amazonaws.com/$AWS_ACCOUNT_ID/togglemaster-evaluation" \
-            --from-literal=AWS_DYNAMODB_TABLE="ToggleMasterAnalytics" \
+            --from-literal=AWS_DYNAMODB_TABLE="togglemaster-analytics" \
             --from-literal=OTEL_EXPORTER_OTLP_ENDPOINT="$OTEL_ENDPOINT" \
             --from-literal=OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \
             --from-literal=OTEL_RESOURCE_ATTRIBUTES="deployment.environment=prod" \
