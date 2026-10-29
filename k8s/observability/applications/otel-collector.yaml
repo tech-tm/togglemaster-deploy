@@ -135,6 +135,12 @@ spec:
                 - key: k8s.cluster.name
                   value: togglemaster-eks
                   action: upsert
+                # Marca todos os spans/metricas/logs com o time dono do servico.
+                # No Datadog isso vira a tag `team:togglemaster`, visivel no
+                # Service Catalog, Service Map e usada em filtros/views.
+                - key: team
+                  value: togglemaster
+                  action: upsert
 
           exporters:
             # Envia traces, metricas e logs para o Datadog (APM do Bloco 3).
