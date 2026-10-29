@@ -142,6 +142,34 @@ spec:
                   value: togglemaster
                   action: upsert
 
+            # ----------------------------------------------------------------
+            # Preenche o atributo `peer.service` nos spans client-side.
+            #
+            # Por que: o Service Map do Datadog monta a seta
+            #   caller -> callee  usando a tag `peer.service` do span client.
+            # Sem ela, mesmo com datadog/connector + peer_tags_aggregation,
+            # o Map pode nao conseguir inferir a dependencia a partir apenas
+            # de `net.peer.name` / `server.address`.
+            #
+            # Como: copiamos de atributos ja presentes (ordem de prioridade):
+            #   1. http.host           -> usado pelo otelhttp (Go) e requests (Py)
+            #   2. net.peer.name       -> idem, convencao antiga
+            #   3. server.address      -> convencao nova (semconv 1.21+)
+            # O `insert` so cria se ainda nao existir, entao se o SDK ja
+            # setou peer.service explicitamente, respeitamos o valor dele.
+            # ----------------------------------------------------------------
+            attributes/peer_service:
+              actions:
+                - key: peer.service
+                  from_attribute: http.host
+                  action: insert
+                - key: peer.service
+                  from_attribute: net.peer.name
+                  action: insert
+                - key: peer.service
+                  from_attribute: server.address
+                  action: insert
+
           exporters:
             # Envia traces, metricas e logs para o Datadog (APM do Bloco 3).
             datadog:
@@ -208,7 +236,12 @@ spec:
               #                          abaixo (Service Map + trace.* metrics)
               traces:
                 receivers: [otlp]
-                processors: [memory_limiter, k8sattributes, resource, batch]
+                # Ordem: memory_limiter (seguranca) -> k8sattributes (tags k8s)
+                # -> resource (env/team/cluster) -> attributes/peer_service
+                # (preenche peer.service nos spans client antes de ir pro
+                # connector, pra ele conseguir agregar o grafo do Service Map)
+                # -> batch (lote final).
+                processors: [memory_limiter, k8sattributes, resource, attributes/peer_service, batch]
                 exporters: [datadog, datadog/connector]
               # O connector atua aqui como "receiver" adicional, injetando
               # as APM Stats no fluxo de metricas. O exporter datadog recebe
