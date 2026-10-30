@@ -71,7 +71,7 @@ aleatórias e grava os valores no SSM na primeira execução:
 > `terraform destroy` da camada que os criou. Após um destroy completo,
 > eles reaparecem com valores novos no próximo `Terraform Apply`.
 
-#### Grupo B — Criados manualmente (Datadog)
+#### Grupo B — Criados manualmente (credenciais de SaaS externos)
 
 Esses você cria **uma vez** e eles persistem entre destroy/apply do Terraform
 (porque não são `aws_ssm_parameter` do Terraform — são valores que você gravou
@@ -93,6 +93,90 @@ aws ssm put-parameter --name "/togglemaster/prod/datadog/site" \
   --type String --value "datadoghq.com" --overwrite \
   --profile aws_fiap
 ```
+
+##### PAT do GitHub (para o webhook de self-healing)
+
+🎯 **O que é:** o webhook `togglemaster-self-healing` no Datadog precisa chamar
+a API do GitHub (`repository_dispatch`) pra disparar o workflow
+`self-healing.yml`. Essa chamada é autenticada com um **Personal Access Token
+(PAT)** do GitHub, armazenado no SSM pra o Terraform ler na hora de criar
+o webhook.
+
+📋 **Pré-requisitos:**
+
+- [ ] Conta GitHub com acesso ao repo `tech-tm/togglemaster-deploy`
+- [ ] AWS CLI configurado com perfil `aws_fiap`
+
+🔧 **Passo-a-passo:**
+
+**1) Criar o PAT no GitHub**
+
+Escolha **uma** das duas opções:
+
+- **Classic PAT (mais simples):**
+  GitHub → Settings → Developer settings → **Personal access tokens (classic)** →
+  Generate new token → nome `togglemaster-datadog-webhook` → marcar escopo
+  **`repo`** (completo) → Generate token → copiar o valor (começa com `ghp_`).
+
+- **Fine-grained PAT (mais seguro):**
+  GitHub → Settings → Developer settings → **Fine-grained tokens** →
+  Generate new token → Resource owner: `tech-tm` → Repository access:
+  **Only select repositories** → `togglemaster-deploy` → Permissions →
+  Repository → **Contents: Read and write** → Generate token → copiar
+  (começa com `github_pat_`).
+
+> ⚠️ **Não cole o PAT direto no comando.** Use `read -s` abaixo pra ele
+> não aparecer no histórico do bash nem na tela.
+
+**2) Gravar no SSM**
+
+```bash
+# Vai pedir o PAT; a entrada fica oculta
+read -s GITHUB_PAT
+
+aws ssm put-parameter \
+  --profile aws_fiap \
+  --name /togglemaster/prod/github/webhook-pat \
+  --type SecureString \
+  --value "$GITHUB_PAT" \
+  --description "PAT para webhook Datadog chamar GitHub Actions dispatch (self-healing)" \
+  --overwrite
+
+# Limpa o valor da sessão
+unset GITHUB_PAT
+```
+
+✅ **Verificar que gravou com tamanho esperado:**
+
+```bash
+aws ssm get-parameter \
+  --profile aws_fiap \
+  --name /togglemaster/prod/github/webhook-pat \
+  --with-decryption \
+  --query 'Parameter.Value' --output text | wc -c
+```
+
+Esperado: ~40 caracteres (classic PAT) ou ~90 caracteres (fine-grained PAT).
+
+❓ **Se der erro:**
+
+- `ParameterNotFound` na leitura → o `put-parameter` não gravou. Confira
+  perfil AWS (`--profile aws_fiap`).
+- `AccessDenied` → sessão AWS Academy expirou. Renove as credenciais em
+  `~/.aws/credentials` e tente de novo.
+- `ExpiredTokenException` → mesmo motivo acima.
+
+**Rotação do PAT:**
+
+- **Classic PAT:** válido até você revogar ou até a data de expiração que
+  você escolheu (mínimo 30 dias, máximo 1 ano, "no expiration" é possível
+  mas desaconselhado).
+- **Fine-grained PAT:** máximo 1 ano. Precisa rotacionar antes de expirar.
+
+Quando rotacionar: refaça o passo 2 com o PAT novo (`--overwrite` substitui
+o valor); depois rode `terraform apply` da camada `terraform/` pra o
+Terraform propagar o novo valor pro webhook do Datadog. Nenhum outro
+pipeline precisa mudar.
 
 ### 0.4 Preflight Check (confere se tudo está no lugar)
 
