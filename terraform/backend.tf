@@ -11,5 +11,29 @@
 # garantindo isolamento com os states de networking, security, data,
 # platform e compute.
 #
-# TODO (Fase C): preencher configuracao completa.
+# SEGURANCA: 'encrypt=true' usa criptografia at-rest com SSE-S3. O
+# bucket ja tem versionamento habilitado, entao qualquer corrupcao do
+# state pode ser revertida restaurando uma versao anterior.
 # ----------------------------------------------------------------------
+
+terraform {
+  required_version = ">= 1.6.0"
+
+  backend "s3" {
+    bucket  = "tech4-tfstates"
+    key     = "deploy/datadog/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
+  }
+
+  required_providers {
+    datadog = {
+      source  = "DataDog/datadog"
+      version = "~> 3.50"
+    }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
