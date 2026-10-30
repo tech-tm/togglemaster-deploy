@@ -61,10 +61,13 @@ resource "datadog_monitor" "auth_5xx" {
   # vinda do JSM, aparece 'service:auth-service', etc).
   include_tags = true
 
-  # Delay apos novo host/pod entrar no scope antes de considera-lo nas
-  # metricas. Evita falsos positivos durante rollout de deployment.
-  # Nome moderno de 'new_host_delay' (deprecated).
-  new_group_delay = 300
+  # NOTA sobre 'new_group_delay' / 'new_host_delay':
+  #
+  # O JSON original tinha 'new_host_delay: 300' (deprecated). O sucessor
+  # moderno 'new_group_delay' so e aceito pela API Datadog em monitores
+  # multi-alert (grouped by tag, ex: 'sum:... by {host}'). Como este e
+  # um monitor single-alert (uma unica serie agregada), o campo e
+  # inutil aqui e a API rejeita com 400 Bad Request. Removido.
 
   # Prioridade 1 = highest. Vira P1 no incident management.
   priority = 1
