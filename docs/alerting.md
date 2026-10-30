@@ -51,12 +51,13 @@ graph TD
 
 | Componente | Fonte | Responsabilidade |
 |---|---|---|
-| **Datadog Monitor** | `alerts/datadog/monitor-5xx-auth.json` | Define a condição do alerta |
-| **Workflow `alerts-deploy.yml`** | `.github/workflows/` | Aplica o monitor via API Datadog (create ou update) |
-| **Workflow `self-healing.yml`** | `.github/workflows/` | Reage ao webhook, faz `rollout restart` |
-| **Integração JSM ↔ Datadog** | configurado no painel JSM | Encaminha alertas Datadog → alertas/incidentes JSM |
-| **Integração JSM ↔ Slack** | configurado no painel JSM | Encaminha incidentes → canal Slack |
-| **Webhook Datadog → GitHub** | configurado no painel Datadog | Dispara `repository_dispatch` no self-healing |
+| **Datadog Monitor** | `terraform/monitors.tf` (Terraform) | Define a condição do alerta (5xx > N%) |
+| **Datadog Webhook** | `terraform/webhooks.tf` (Terraform) | Chama o GitHub Actions via `repository_dispatch` |
+| **Workflow `datadog-terraform-apply.yml`** | `.github/workflows/` | Aplica o monitor e o webhook via `terraform apply` |
+| **Workflow `datadog-terraform-destroy.yml`** | `.github/workflows/` | Destroi monitor + webhook (com double-confirmation) |
+| **Workflow `self-healing.yml`** | `.github/workflows/` | Reage ao `repository_dispatch`, faz `kubectl rollout restart` |
+| **Integração JSM ↔ Datadog** | configurado no painel JSM (manual, 1x) | Encaminha alertas Datadog → alertas/incidentes JSM |
+| **Integração JSM ↔ Slack** | configurado no painel JSM (manual, 1x) | Encaminha incidentes → canal Slack |
 
 ---
 
@@ -162,61 +163,48 @@ Se não aparecer, revise a integração Slack.
 
 ---
 
-### Passo 5 — Datadog webhook para self-healing
+### Passo 5 — Webhook e Monitor via Terraform
 
-1. Datadog → Integrations → **Webhooks** → **New Webhook**.
-2. Nome: `togglemaster-self-healing` (sem `@` — ele é adicionado automaticamente).
-3. **URL**:
-   ```
-   https://api.github.com/repos/tech-tm/togglemaster-deploy/dispatches
-   ```
-4. **Payload** (JSON):
-   ```json
-   {
-     "event_type": "datadog-alert",
-     "client_payload": {
-       "service": "auth-service",
-       "alert_name": "$ALERT_TITLE",
-       "alert_url":  "$LINK",
-       "alert_id":   "$ALERT_ID"
-     }
-   }
-   ```
-5. **Custom Headers**:
-   | Header | Valor |
-   |---|---|
-   | `Accept` | `application/vnd.github+json` |
-   | `Authorization` | `token <SEU_PAT_GITHUB>` |
-   | `X-GitHub-Api-Version` | `2022-11-28` |
-6. Salvar.
+> 🔄 **Mudou do roteiro antigo:** antes esse passo era manual (clicar no
+> painel do Datadog pra criar o webhook). Agora o webhook **e** o monitor
+> são criados por Terraform versionado em [`togglemaster-deploy/terraform/`](../terraform/).
+>
+> O que fica manual (uma vez só): cadastrar o PAT do GitHub no SSM. Isso
+> é documentado no `DEPLOY.md` → seção **0.3 → PAT do GitHub (para o
+> webhook de self-healing)**.
 
-> O webhook se chama internamente `togglemaster-self-healing`, por isso o
-> monitor usa `@webhook-togglemaster-self-healing` (o Datadog adiciona o prefixo).
-
----
-
-### Passo 6 — Aplicar o Monitor
-
-Rode o workflow:
+Depois do PAT no SSM, basta rodar o workflow:
 
 ```
-Actions → "Alerts Deploy" → Run workflow → branch deploy
+GitHub → togglemaster-deploy → Actions → Datadog Terraform — Apply → Run workflow
 ```
 
-Inputs (todos têm default sensato):
+**Inputs:**
 
-| Input | Default |
-|---|---|
-| `incident_handle` | `jsm_ops` |
-| `threshold_percent` | `5` |
-| `warning_percent` | `3` |
+| Input | Default | O que faz |
+|---|---|---|
+| `action` | `plan` | `plan` gera dry-run (artifact); `apply` cria/atualiza no Datadog |
+| `threshold_percent` | `5` | % crítico de 5xx |
+| `warning_percent` | `3` | % warning de 5xx |
 
-O workflow faz:
-1. Lê API Key e App Key do Datadog do SSM.
-2. Lê `alerts/datadog/monitor-5xx-auth.json`, substitui placeholders (incluindo `${INCIDENT_HANDLE}`).
-3. Busca monitor existente por `name` no Datadog.
-4. Se não existe: `POST` cria. Se existe: `PUT` atualiza.
-5. Imprime URL do monitor no resumo.
+**O que o workflow faz:**
+
+1. Lê API Key, App Key e PAT GitHub do SSM Parameter Store (sem exposição).
+2. Terraform init com backend S3 (`tech4-tfstates`, key `deploy/datadog/terraform.tfstate`).
+3. Terraform plan (sempre) → artifact disponível pra download.
+4. Terraform apply (se `action=apply`):
+   - Cria/atualiza `datadog_monitor.auth_5xx` (query 5xx > N%, mensagem com `@jsm_ops` + `@webhook-togglemaster-self-healing`).
+   - Cria/atualiza `datadog_webhook.self_healing` (URL `api.github.com/.../dispatches`, headers com PAT).
+
+> O webhook se chama `togglemaster-self-healing`, por isso a mensagem
+> do monitor referencia `@webhook-togglemaster-self-healing` (o Datadog
+> adiciona o prefixo `webhook-`).
+
+**Para destruir** (sem tocar em credenciais nem no cluster): rodar o workflow
+**Datadog Terraform — Destroy** com `confirm_destroy = destroy-datadog`.
+
+Detalhes técnicos (variáveis, outputs, rollback granular, troubleshooting):
+[`togglemaster-deploy/terraform/README.md`](../terraform/README.md).
 
 ---
 

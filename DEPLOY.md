@@ -440,32 +440,96 @@ Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`
 
 ### 6.1 Setup manual (uma vez, fora do GitHub)
 
-- [ ] **Datadog**: criar webhook `togglemaster-self-healing` apontando pro
-  `repository_dispatch` do GitHub Actions (ver `docs/alerting.md` passo 5).
+Essas são integrações entre contas SaaS externas — não dá pra automatizar
+no projeto. Faça uma vez; persistem entre destroys do cluster.
+
 - [ ] Criar site JSM (`<seunome>.atlassian.net`) com template "IT Service Management".
 - [ ] JSM: adicionar integração **Datadog** → copiar API Key.
 - [ ] Datadog: instalar integração **Jira Service Management Ops** → colar a API Key.
 - [ ] JSM: adicionar integração **Slack**, autorizar o workspace, selecionar o canal `#alerts`.
+- [ ] **PAT do GitHub cadastrado no SSM** (ver seção **0.3 → PAT do GitHub (para o webhook de self-healing)** acima — único pré-requisito pro Terraform da fase 6).
 
-### 6.2 Aplicar o Monitor
+> 💡 **Mudou do roteiro antigo:** o webhook `togglemaster-self-healing` no
+> Datadog **não** é mais criado manualmente no painel. Agora é gerenciado
+> por Terraform (seção 6.2 abaixo). O que fica manual é só a conexão
+> entre contas SaaS (JSM ↔ Datadog ↔ Slack).
 
-**`togglemaster-deploy`** → Actions → **Alerts Deploy** → Run workflow
+### 6.2 Aplicar o Monitor + Webhook via Terraform
 
-Inputs (todos têm default sensato):
+🎯 **Objetivo:** criar o monitor de 5xx e o webhook de self-healing no
+Datadog, 100% versionados em código (`terraform/` dentro deste repo).
 
-| Input | Default |
+📋 **Pré-requisitos:**
+- [x] Fase 4 concluída (observabilidade rodando, OTel Collector exportando)
+- [x] Fase 5 concluída (microsserviços de pé, carga gerada → métricas APM
+      chegando no Datadog)
+- [x] API Key + App Key Datadog no SSM (seção 0.3, Grupo B)
+- [x] PAT GitHub no SSM (seção 0.3)
+
+> ⚠️ **Importante:** rode a Fase 6 **somente depois** das Fases 4 e 5.
+> Caso contrário o monitor nasce em `No Data` perpétuo — a métrica
+> `trace.http.request.hits{service:auth-service}` só existe depois que o
+> OTel Collector começa a enviar APM Stats pro Datadog.
+
+🔧 **Passo-a-passo:**
+
+**1) Rodar em modo `plan` primeiro (dry-run — não altera nada):**
+
+`togglemaster-deploy` → Actions → **Datadog Terraform — Apply** → Run workflow
+
+| Input | Valor |
 |---|---|
-| `incident_handle` | `jsm_ops` |
+| `action` | `plan` |
 | `threshold_percent` | `5` |
 | `warning_percent` | `3` |
 
-Esse workflow lê o payload JSON versionado em `alerts/datadog/monitor-5xx-auth.json`,
-substitui o placeholder `${INCIDENT_HANDLE}` e cria/atualiza o Monitor no Datadog via API.
+O workflow baixa o Terraform, inicializa o backend S3, roda `terraform plan`
+e salva o resultado como artifact `tfplan-<run_id>`.
+
+**2) Revisar o plan:**
+
+- Baixe o artifact `tfplan-<run_id>` da UI do GitHub Actions
+- Confira que vai criar/atualizar apenas 2 recursos:
+  - `datadog_monitor.auth_5xx`
+  - `datadog_webhook.self_healing`
+
+**3) Aplicar:**
+
+Mesma Action → Run workflow com `action = apply` → Aguarde a conclusão.
+
+O workflow:
+1. Lê API Key, App Key e PAT GitHub do SSM Parameter Store.
+2. Autentica no Datadog e no GitHub.
+3. Cria/atualiza o monitor (query de 5xx > 5%).
+4. Cria/atualiza o webhook (headers com PAT GitHub).
+5. Mostra Monitor ID + URL no Summary do workflow.
+
+> ⚠️ **Primeira aplicação em ambiente que já tinha monitor manual:**
+> se o monitor ou webhook já existir no painel (criado por você manualmente
+> ou pelo workflow legado `alerts-deploy.yml`), o apply vai falhar com
+> `Resource already exists`. Nesse caso, siga o troubleshooting em
+> [`terraform/README.md`](./terraform/README.md) → **"Resource already
+> exists durante o apply"**.
 
 ### 6.3 Validar
 
-- Datadog UI → **Monitors** → o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` deve aparecer com status `OK` ou `No Data`.
-- Teste manual: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que o alerta aparece no JSM (**Operations** → **Alerts**) e a notificação chega no Slack `#alerts`.
+- Datadog UI → **Monitors** → monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` com status `OK` ou `No Data`.
+- Datadog UI → **Integrations** → **Webhooks** → `togglemaster-self-healing` presente.
+- Teste manual do fluxo completo: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que:
+  1. O alerta aparece no JSM (**Operations** → **Alerts**).
+  2. A notificação chega no Slack `#alerts`.
+  3. O workflow **Self-Healing Rollout** é disparado em `togglemaster-deploy` → Actions.
+
+### 6.4 Remover (opcional)
+
+Pra destruir monitor + webhook sem afetar o restante da infra:
+
+`togglemaster-deploy` → Actions → **Datadog Terraform — Destroy** → Run
+workflow com `confirm_destroy = destroy-datadog`.
+
+As credenciais no SSM, integrações JSM/Slack e o cluster EKS **não** são
+tocados. Veja [`terraform/README.md`](./terraform/README.md) → **Rollback**
+pra opções mais granulares (reverter só monitor, só webhook, etc.).
 
 ---
 

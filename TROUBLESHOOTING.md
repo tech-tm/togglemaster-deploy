@@ -31,6 +31,7 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [17. `InvalidSignatureException` ao chamar AWS no workflow](#17-invalidsignatureexception-ao-chamar-aws-no-workflow)
 - [18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`](#18-application-togglemaster-fica-outofsync-em-specreplicas)
 - [19. Terraform: `ResourceNotFoundException` ao fazer apply](#19-terraform-resourcenotfoundexception-ao-fazer-apply)
+- [20. Datadog Terraform: `Resource already exists` ou `401 Unauthorized`](#20-datadog-terraform-resource-already-exists-ou-401-unauthorized)
 
 ---
 
@@ -1080,6 +1081,139 @@ As ferramentas que **corrigem** o conteúdo do state são:
 - `terraform refresh` / `terraform plan -refresh-only` — sincroniza state com AWS.
 - `terraform state rm` — remove do state recursos fantasma.
 - `terraform import` — adiciona ao state recursos que existem na AWS mas foram criados fora do Terraform.
+
+---
+
+## 20. Datadog Terraform: `Resource already exists` ou `401 Unauthorized`
+
+### Sintoma A — `Resource already exists`
+
+Workflow **Datadog Terraform — Apply** falha ao criar o monitor ou webhook:
+
+```text
+Error: error creating monitor: 400 Bad Request:
+{"errors":["A monitor with the same name already exists"]}
+```
+
+Ou similar pro webhook:
+
+```text
+Error: error creating webhook: 400 Bad Request:
+{"errors":["webhook with name togglemaster-self-healing already exists"]}
+```
+
+### Causa (Sintoma A)
+
+O recurso já existe no painel Datadog — criado manualmente ou pelo
+workflow legado `alerts-deploy.yml`. O Terraform não sabe que ele existe
+(state vazio) e tenta criar outro com mesmo nome.
+
+### Solução (Sintoma A) — Importar o recurso existente
+
+Rodar localmente (não via workflow, pois `terraform import` precisa ser interativo):
+
+```bash
+cd togglemaster-deploy/terraform
+
+# 1. Descobrir ID do monitor atual na API
+DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/api-key --with-decryption \
+  --query 'Parameter.Value' --output text)
+DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key --with-decryption \
+  --query 'Parameter.Value' --output text)
+
+MONITOR_ID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=%5BToggleMaster%5D%20auth-service" \
+  -H "DD-API-KEY: $DD_API_KEY" \
+  -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
+  | jq -r '.[0].id')
+echo "Monitor ID: $MONITOR_ID"
+
+# 2. Importar monitor
+AWS_PROFILE=aws_fiap terraform import datadog_monitor.auth_5xx $MONITOR_ID
+
+# 3. Importar webhook (pelo nome)
+AWS_PROFILE=aws_fiap terraform import datadog_webhook.self_healing togglemaster-self-healing
+
+# 4. Confirmar
+AWS_PROFILE=aws_fiap terraform state list
+
+# 5. Plan — deve mostrar poucas ou nenhuma mudança
+AWS_PROFILE=aws_fiap terraform plan
+```
+
+Se o plan mostrar diferenças aceitáveis (ex: adicionar tag `managed-by:terraform`), rode `terraform apply`.
+
+### Alternativa (Sintoma A) — Deletar no painel e recriar
+
+Mais simples, mas gera gap de ~2 min sem alerta ativo:
+
+1. Datadog UI → Monitors → excluir o monitor
+2. Datadog UI → Integrations → Webhooks → excluir `togglemaster-self-healing`
+3. Rodar workflow **Datadog Terraform — Apply** com `action=apply`
+
+### Sintoma B — `401 Unauthorized`
+
+```text
+Error: error creating/updating monitor: 401 Unauthorized
+```
+
+### Causa (Sintoma B)
+
+Autenticação falhou na API Datadog. Possíveis causas:
+
+1. **App Key errada no SSM** — comum confundir:
+   - **Application Key** (prefixo `ddapp_` ou 40 chars hex) ← correto
+   - **Personal Access Token** (prefixo `ddpat_`) ← errado, não serve
+   - **API Key** (32 chars hex) ← serve pra ingestão, não pra criar recursos
+2. **App Key expirada ou revogada** no painel Datadog
+3. **API Key sem permissão** (menos comum, acontece em contas com RBAC apertado)
+
+### Solução (Sintoma B)
+
+```bash
+# 1. Verificar o tipo de valor no SSM sem expor o segredo
+aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key \
+  --with-decryption --query 'Parameter.Value' --output text \
+  | awk '{printf "primeiros 10: %s... | len: %d\n", substr($0,1,10), length($0)}'
+
+# Esperado: começa com 'ddapp_' E len ~40, OU 40 chars hex sem prefixo
+# Se começar com 'ddpat_' ou tiver 32 chars → está errado, siga pro passo 2
+```
+
+```bash
+# 2. Criar Application Key correta
+# Datadog UI → avatar → Personal Settings → Application Keys → New Key
+# Nome: togglemaster-terraform
+# Copiar o valor
+
+# 3. Gravar no SSM
+read -s DD_APP_KEY   # cola a Application Key, Enter
+aws ssm put-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key \
+  --type SecureString --value "$DD_APP_KEY" --overwrite
+unset DD_APP_KEY
+
+# 4. Validar com curl antes de rodar o workflow
+DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap --name /togglemaster/prod/datadog/api-key --with-decryption --query 'Parameter.Value' --output text)
+DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap --name /togglemaster/prod/datadog/app-key --with-decryption --query 'Parameter.Value' --output text)
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
+  "https://api.datadoghq.com/api/v1/monitor?page_size=1" \
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY"
+# Esperado: HTTP 200
+```
+
+### Sintoma C — `ParameterNotFound`
+
+```text
+Error: couldn't find resource (/togglemaster/prod/github/webhook-pat)
+```
+
+### Causa e Solução (Sintoma C)
+
+PAT GitHub não foi cadastrado no SSM. Siga `DEPLOY.md` → seção
+**0.3 → PAT do GitHub (para o webhook de self-healing)**.
 
 ---
 
