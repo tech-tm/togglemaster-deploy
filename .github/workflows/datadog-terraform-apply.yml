@@ -1,0 +1,150 @@
+name: Datadog Terraform — Apply
+
+# ----------------------------------------------------------------------
+# Aplica (cria/atualiza) os recursos do painel Datadog versionados em
+# togglemaster-deploy/terraform/:
+#   - datadog_monitor.auth_5xx     (monitor 5xx auth-service)
+#   - datadog_webhook.self_healing (webhook GitHub Actions dispatch)
+#
+# Substitui o antigo workflow 'alerts-deploy.yml' (sera removido na
+# Fase K do plano de migracao).
+#
+# ORDEM NO FLUXO DE DEPLOY (ver DEPLOY.md Fase 6):
+#   Rode este workflow somente DEPOIS que 'observability-deploy' e
+#   'gitops' concluirem e os microsservicos estiverem rodando com carga
+#   gerada — caso contrario o monitor fica em 'No Data' ate as metricas
+#   APM comecarem a chegar ao Datadog.
+#
+# USO:
+#   1. action=plan  -> gera plano e sobe como artifact (sem alterar nada)
+#   2. revisar o artifact
+#   3. action=apply -> aplica no painel Datadog
+# ----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Acao: plan (dry-run) ou apply (aplica no Datadog)'
+        type: choice
+        options: [plan, apply]
+        default: plan
+      threshold_percent:
+        description: 'Threshold critical do monitor 5xx (% erros)'
+        type: string
+        default: '5'
+      warning_percent:
+        description: 'Threshold warning do monitor 5xx (% erros)'
+        type: string
+        default: '3'
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_WORKING_DIR: terraform
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.action }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (branch deploy)
+        uses: actions/checkout@v4
+        with:
+          ref: deploy
+
+      - name: Configure AWS credentials
+        # Necessario para:
+        #  - acessar o backend S3 (bucket 'tech4-tfstates')
+        #  - ler os parametros SSM com as credenciais do Datadog e PAT GitHub
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        # terraform_wrapper=false desabilita o wrapper do action que
+        # intercepta stdout — necessario para 'terraform output -raw'
+        # funcionar corretamente em pipes/capturas.
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -input=false \
+            -var="threshold_percent=${{ inputs.threshold_percent }}" \
+            -var="warning_percent=${{ inputs.warning_percent }}" \
+            -out=tfplan
+
+      # Upload do plan como artifact — permite revisao offline antes
+      # de rodar com action=apply. Util para auditoria do que vai mudar.
+      - name: Upload plan artifact
+        if: ${{ inputs.action == 'plan' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days: 7
+
+      - name: Terraform Apply
+        if: ${{ inputs.action == 'apply' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Summary
+        if: always()
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo "# Datadog Terraform — ${{ inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.action }}" = "apply" ] && [ "${{ job.status }}" = "success" ]; then
+            MONITOR_ID=$(terraform output -raw monitor_id 2>/dev/null || echo "n/a")
+            MONITOR_URL=$(terraform output -raw monitor_url 2>/dev/null || echo "n/a")
+            WEBHOOK_NAME=$(terraform output -raw webhook_name 2>/dev/null || echo "n/a")
+
+            echo "✅ **Recursos aplicados no painel Datadog**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            echo "| Monitor ID | \`$MONITOR_ID\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Monitor URL | [$MONITOR_URL]($MONITOR_URL) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Webhook | \`$WEBHOOK_NAME\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Threshold critical | ${{ inputs.threshold_percent }}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Threshold warning | ${{ inputs.warning_percent }}% |" >> $GITHUB_STEP_SUMMARY
+
+          elif [ "${{ inputs.action }}" = "plan" ] && [ "${{ job.status }}" = "success" ]; then
+            echo "📋 **Plan gerado com sucesso**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Artifact: \`tfplan-${{ github.run_id }}\` (retencao 7 dias)" >> $GITHUB_STEP_SUMMARY
+            echo "- Nada foi aplicado no Datadog." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Para aplicar, rode o workflow novamente com \`action=apply\`." >> $GITHUB_STEP_SUMMARY
+
+          else
+            echo "❌ **Falha no workflow**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Status: \`${{ job.status }}\` | Acao: \`${{ inputs.action }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Verifique os logs do job para detalhes." >> $GITHUB_STEP_SUMMARY
+          fi
