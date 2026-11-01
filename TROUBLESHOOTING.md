@@ -823,7 +823,7 @@ Chamadas sem prefixo retornam 404 do nginx default backend.
 
 | URL externa | Vai pro serviço | Vira no backend |
 |---|---|---|
-| `/validate/<path>` | auth-service | `/<path>` |
+| `/auth/<path>` | auth-service | `/<path>` (ex: `/auth/validate` → `/validate`) |
 | `/flag/<path>` | flag-service | `/<path>` |
 | `/targeting/<path>` | targeting-service | `/<path>` |
 | `/evaluation/<path>` | evaluation-service | `/<path>` |
@@ -833,7 +833,7 @@ Chamadas sem prefixo retornam 404 do nginx default backend.
 
 ```bash
 # health dos 5 serviços
-for route in validate flag targeting evaluation analytics; do
+for route in auth flag targeting evaluation analytics; do
   curl -s -o /dev/null -w "%s/health → %{http_code}\n" "$route" "http://$INGRESS/$route/health"
 done
 

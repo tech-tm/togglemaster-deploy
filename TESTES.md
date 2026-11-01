@@ -291,7 +291,7 @@ kubectl logs -n togglemaster deploy/evaluation-service --since=10m 2>/dev/null \
 INGRESS=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-for route in validate flag targeting evaluation analytics; do
+for route in auth flag targeting evaluation analytics; do
   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
     "http://$INGRESS/$route/health")
   echo "/$route/health → HTTP $code"
@@ -509,7 +509,7 @@ check "T3.4 Zero erros SQS NoCredentialProviders" bash -c '[ "$(kubectl logs -n 
 
 INGRESS=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
 if [ -n "$INGRESS" ]; then
-  for route in validate flag targeting evaluation analytics; do
+  for route in auth flag targeting evaluation analytics; do
     check "T3.5 Ingress /$route/health HTTP 200" bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://$INGRESS/$route/health') = '200' ]"
   done
 fi

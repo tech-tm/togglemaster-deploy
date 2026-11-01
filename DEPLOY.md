@@ -622,7 +622,7 @@ Faça algumas chamadas de evaluate — **note que o Ingress exige o prefixo `/ev
 
 ```bash
 # Health dos 5 serviços (rotas do Ingress têm prefixo por serviço)
-for route in validate flag targeting evaluation analytics; do
+for route in auth flag targeting evaluation analytics; do
   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$INGRESS/$route/health")
   echo "$route/health → HTTP $code"
 done
@@ -637,7 +637,7 @@ Observe no Datadog APM → **Service Map**: os 5 serviços devem aparecer
 conectados por setas (`evaluation` → `auth`, `flag`, `targeting`).
 
 > **Mapa de rotas do Ingress** (prefixo é rewriten pelo nginx):
-> - `/validate/<path>` → `auth-service` recebe `/<path>`
+> - `/auth/<path>` → `auth-service` recebe `/<path>` (ex: `/auth/validate` → `/validate`)
 > - `/flag/<path>` → `flag-service`
 > - `/targeting/<path>` → `targeting-service`
 > - `/evaluation/<path>` → `evaluation-service`
