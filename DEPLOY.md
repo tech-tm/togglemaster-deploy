@@ -633,8 +633,8 @@ graph TD
     E --> F[4.1 Observability Deploy]
     F --> G[4.2 Sync Datadog Secret]
     G --> H[5. GitOps push]
-    H --> I[6.1 Setup JSM/Slack manual]
-    I --> J[6.2 Alerts Deploy]
+    H --> I[6.1 Setup JSM/Slack manual + PAT GitHub no SSM]
+    I --> J[6.2 Datadog Terraform — Apply]
     J --> K[7. Teste end-to-end + prints]
     K --> L[8. Vídeo + Relatório]
 ```
@@ -732,7 +732,7 @@ Todos esses são aplicados pelos workflows na nova rodada:
 - ArgoCD + `ignoreDifferences` globais — `Install ArgoCD` aplica o `k8s/argocd/values.yaml`.
 - Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) com todos os fixes — `Observability Deploy`.
 - Microsserviços com instrumentação OTel e credenciais AWS nos deployments — `GitOps` + ArgoCD.
-- Monitor do Datadog — `Alerts Deploy`.
+- Monitor do Datadog + webhook de self-healing — `Datadog Terraform — Apply` (camada `terraform/`).
 - Workflow de self-healing — já versionado.
 
 ### NÃO persiste no cluster (vem de fora do Git) ⚠️

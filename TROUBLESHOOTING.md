@@ -467,31 +467,36 @@ viraram abóbora.
 
 ### Sintoma
 
-Workflow `Alerts Deploy` falha com:
+Workflow `Datadog Terraform — Apply` falha com:
 
 ```text
-HTTP 403
+Error: 403 Forbidden
 {"errors": ["Forbidden"]}
 ```
 
 ### Causa
 
-Falta a **Application Key** (não é a API Key). API Key autoriza ingestão de
+Falta a **Application Key** (não a API Key). API Key autoriza ingestão de
 dados; App Key autoriza chamadas de **gerenciamento** da API (criar monitors,
 dashboards, etc.).
 
+> Erro parecido pode acontecer se a App Key foi substituída por um
+> **Personal Access Token** (prefixo `ddpat_`) por engano — ver também
+> seção **20** deste guia.
+
 ### Solução
 
-1. Datadog UI → avatar canto superior direito → **Organization Settings** →
+1. Datadog UI → avatar canto superior direito → **Personal Settings** →
    **Application Keys** → **New Key**.
-2. Nome: `togglemaster-ci`.
-3. Copie o valor.
+2. Nome: `togglemaster-terraform`.
+3. Copie o valor (começa com `ddapp_` ou tem 40 chars hex).
 4. Grave no SSM:
    ```bash
-   aws ssm put-parameter --name "/togglemaster/prod/datadog/app-key" \
+   aws ssm put-parameter --profile aws_fiap \
+     --name "/togglemaster/prod/datadog/app-key" \
      --type SecureString --value "<DD_APP_KEY>" --overwrite
    ```
-5. Rode `Alerts Deploy` de novo.
+5. Rode `Datadog Terraform — Apply` de novo.
 
 ---
 
