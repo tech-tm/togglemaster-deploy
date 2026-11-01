@@ -157,9 +157,9 @@ kubectl delete jobs -n argocd \
 # Repete o helm com timeout maior
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
-  --version 7.8.0 \
+  --version 10.11.6 \
   -f k8s/argocd/values.yaml \
-  --timeout 15m \
+  --timeout 20m \
   --wait
 ```
 

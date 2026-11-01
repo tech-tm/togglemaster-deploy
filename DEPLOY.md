@@ -274,7 +274,7 @@ done
 **`togglemaster-deploy`** → Actions → **Install ArgoCD** → Run workflow → branch `deploy`
 
 Isso faz:
-- Helm `argo-cd` v7.8.0 no namespace `argocd` (modo LoadBalancer + insecure, com `ignoreDifferences` globais pra evitar `ComparisonError`).
+- Helm `argo-cd` v10.11.6 no namespace `argocd` → **ArgoCD app v3.5.6** (modo LoadBalancer + insecure, com `ignoreDifferences` globais pra evitar `ComparisonError`).
 - Aplica `k8s/application.yaml` — Application do ArgoCD que gerencia os 5 microsserviços.
 
 Duração: ~5 min.
