@@ -235,35 +235,108 @@ aws ecr describe-repositories \
 
 ## Fase 2 — Imagens dos microsserviços no ECR
 
-Nessa fase, você faz **build + push** das imagens dos 5 serviços no ECR.
+Nessa fase, você faz **build + push** das imagens dos 5 serviços no ECR
++ atualização automática do `kustomization.yaml` deste repo (`togglemaster-deploy`)
+com a nova tag SHA.
 
 ### 2.1 Disparar os workflows
 
-Opção **A** (recomendado): faz um commit vazio em cada serviço no `togglemaster-app`
-(gatilho natural dos workflows).
+Os 5 workflows (`auth-service`, `flag-service`, `targeting-service`,
+`evaluation-service`, `analytics-service`) suportam 2 formas de disparo:
+
+- **Automático**: push na branch `main` do `togglemaster-app` **que altere**
+  um arquivo em `src/<svc>-service/**`. ⚠️ Commit vazio **não dispara**
+  (o path filter dos workflows ignora commits sem mudança nos paths listados).
+- **Manual** (`workflow_dispatch`): recomendado pro deploy do zero,
+  quando o ECR acabou de ser recriado pelo Terraform e você precisa
+  publicar as 5 imagens sem alterar código.
+
+**Opção A — Via `gh` CLI (recomendado):**
+
+```bash
+# Dispara os 5 workflows em sequencia
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  gh workflow run "$svc.yml" \
+    --repo tech-tm/togglemaster-app \
+    --ref main
+  echo "✓ $svc disparado"
+done
+
+# Acompanha o progresso
+gh run list --repo tech-tm/togglemaster-app --limit 10
+```
+
+**Opção B — Via UI do GitHub:**
+
+Pra cada serviço:
+`togglemaster-app` → **Actions** → selecione o workflow (ex: `Auth Service CI`)
+→ **Run workflow** → branch `main` → **Run workflow**.
+
+Repita pros 5 serviços.
+
+**Opção C — Via commit real no código:**
+
+Se de fato mudou algo em `src/<svc>-service/`, basta push normal:
 
 ```bash
 cd togglemaster-app
-for svc in auth flag targeting evaluation analytics; do
-  git commit --allow-empty -m "chore(deploy): trigger build $svc-service"
-done
+# ... edite algum arquivo em src/auth-service/ ...
+git add src/auth-service/
+git commit -m "chore(auth): algum ajuste"
 git push origin main
 ```
 
-Opção **B**: dispare manualmente cada workflow:
-`togglemaster-app` → Actions → `auth-service` → Run workflow (etc).
-
 ### 2.2 Validar
 
+**Check 1 — Workflows passaram verde:**
+
 ```bash
-# Imagens com SHA do commit em todos os 5 repos
+gh run list --repo tech-tm/togglemaster-app --limit 10
+# Procure por 5 runs recentes com STATUS ✓ (success):
+#   Auth / Flag / Targeting / Evaluation / Analytics Service CI
+```
+
+**Check 2 — Imagens no ECR com SHA correta (teste definitivo):**
+
+```bash
 for svc in auth flag targeting evaluation analytics; do
-  echo "--- $svc ---"
-  aws ecr describe-images \
+  echo "=== togglemaster-$svc ==="
+  aws ecr describe-images --profile aws_fiap \
     --repository-name togglemaster-$svc \
-    --query 'imageDetails[].imageTags' --output text
+    --query 'imageDetails[].{Tag:imageTags[0],Pushed:imagePushedAt}' \
+    --output table 2>&1 | head -8
 done
 ```
+
+Esperado: cada repo mostra pelo menos 1 imagem com `Tag` sendo o SHA
+do commit (40 chars hex, ex: `1c5548d07ba49bc603a807d5fcbdc2abe5d1665b`)
+e `Pushed` recente.
+
+**Check 3 — Commits automáticos chegaram no `togglemaster-deploy`:**
+
+A última etapa do CI atualiza o `kustomization.yaml` deste repo. Verifique:
+
+```bash
+cd togglemaster-deploy
+git fetch origin deploy
+git log origin/deploy --oneline --author="github-actions" -10
+```
+
+Esperado: 5 commits recentes `chore: update <svc> to <SHA>`.
+
+### 2.3 Problemas comuns
+
+- **Workflow falha no Trivy scan** (`exit-code: 1` com CVE CRITICAL):
+  uma dependência tem vulnerabilidade crítica nova. Opções:
+  (a) atualizar a dependência, (b) adicionar `--ignorefile` com o CVE,
+  (c) ajustar `severity` no workflow pra `HIGH,CRITICAL` com ignore.
+- **Workflow falha no `Push changes` do gitops update**:
+  o `PERSONAL_ACCESS_TOKEN` nos GitHub Secrets do `togglemaster-app`
+  expirou ou perdeu permissão `Contents: write` no `togglemaster-deploy`.
+- **`gh workflow run` retorna `workflow does not have workflow_dispatch trigger`**:
+  os workflows ainda estão numa branch sem o `workflow_dispatch` configurado.
+  Confirme que a branch `main` tem o trigger (adicionado nas correções
+  recentes).
 
 ---
 
