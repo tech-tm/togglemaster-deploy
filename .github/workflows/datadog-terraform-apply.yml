@@ -6,8 +6,7 @@ name: Datadog Terraform — Apply
 #   - datadog_monitor.auth_5xx     (monitor 5xx auth-service)
 #   - datadog_webhook.self_healing (webhook GitHub Actions dispatch)
 #
-# Substitui o antigo workflow 'alerts-deploy.yml' (sera removido na
-# Fase K do plano de migracao).
+# Substitui o antigo workflow 'alerts-deploy.yml', ja removido.
 #
 # ORDEM NO FLUXO DE DEPLOY (ver DEPLOY.md Fase 6):
 #   Rode este workflow somente DEPOIS que 'observability-deploy' e

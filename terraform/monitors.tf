@@ -1,9 +1,12 @@
 # ----------------------------------------------------------------------
 # monitors.tf
 # ----------------------------------------------------------------------
-# Recurso 'datadog_monitor.auth_5xx' — substitui o payload JSON
-# 'alerts/datadog/monitor-5xx-auth.json' aplicado pelo workflow
-# 'alerts-deploy.yml' (ambos serao removidos na Fase K).
+# Recurso 'datadog_monitor.auth_5xx'.
+#
+# Esse monitor antes era criado pelo workflow 'alerts-deploy.yml' a
+# partir do payload JSON em 'alerts/datadog/monitor-5xx-auth.json'.
+# Esses dois arquivos foram removidos — toda a configuracao vive
+# agora aqui (Terraform).
 #
 # Monitor exigido pelo Bloco 4 do PDF (Tech Challenge Fase 4):
 #   "Disparar se a taxa de erros HTTP 5xx do auth-service for maior que 5%"
