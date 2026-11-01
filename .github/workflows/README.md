@@ -16,7 +16,8 @@ exceto o `GitOps` que roda automaticamente a cada push na branch `deploy`.
 | **Observability Deploy** | `observability-deploy.yml` | manual | Sobe a stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) via App-of-Apps | 1 + 2 |
 | **Sync Datadog Secret from SSM** | `datadog-secret-sync.yml` | manual | Cria o Secret `datadog-secret` no namespace `observability` a partir do SSM | 2 |
 | **GitOps** | `gitops.yml` | push em `deploy` ou manual | Cria/atualiza o `togglemaster-config` ConfigMap, aplica db-init jobs, dá rollout restart nos deployments | 3 |
-| **Alerts Deploy** | `alerts-deploy.yml` | manual | Aplica o Monitor do Datadog (`alerts/datadog/*.json`) via API — create/update idempotente | 4 |
+| **Datadog Terraform — Apply** | `datadog-terraform-apply.yml` | manual | Aplica (plan/apply) o monitor + webhook do Datadog versionados em `terraform/` | 4 |
+| **Datadog Terraform — Destroy** | `datadog-terraform-destroy.yml` | manual (double-confirmation) | Destroi o monitor + webhook gerenciados pelo Terraform | 4 |
 | **Self-Healing Rollout** | `self-healing.yml` | `repository_dispatch` (Datadog) ou manual | Executa `kubectl rollout restart` no serviço afetado em resposta ao alerta | 4 |
 | **Sync Kubernetes Secrets from SSM** | `secrets-sync.yml` | `workflow_call` | Reutilizável, chamado pelo `GitOps` para sincronizar secrets de banco/redis | — |
 
@@ -37,7 +38,7 @@ graph TD
 3. **Observabilidade**: `Observability Deploy` sobe toda a stack de monitoramento (ver `docs/observability.md`).
 4. **Datadog**: `Sync Datadog Secret from SSM` cria o secret que o OTel Collector precisa para exportar ao Datadog.
 5. **GitOps**: um push na branch `deploy` (ou execução manual) atualiza o ConfigMap da aplicação e dá rollout nos microsserviços.
-6. **Alertas**: `Alerts Deploy` cria o Monitor do Datadog (ver `docs/alerting.md`).
+6. **Alertas**: `Datadog Terraform — Apply` cria o Monitor + Webhook via Terraform (ver `docs/alerting.md` e `terraform/README.md`).
 7. **Self-Healing**: configurado uma vez pelo painel do Datadog (webhook → `self-healing.yml`); roda automaticamente quando o monitor dispara.
 
 ---
@@ -186,23 +187,65 @@ Apenas via `workflow_call`. Não é disparado manualmente.
 
 ---
 
-## Alerts Deploy (`alerts-deploy.yml`)
+## Datadog Terraform — Apply (`datadog-terraform-apply.yml`)
 
 ### Papel
 
-Aplica (cria ou atualiza) o Monitor do Datadog a partir do JSON versionado
-em `alerts/datadog/`. Operação idempotente: busca o monitor pelo campo
-`name`, PUT se existir e POST se não.
+Aplica (plan ou apply) o monitor e o webhook do Datadog versionados em
+`terraform/`. Substitui o antigo `alerts-deploy.yml` + `monitor-5xx-auth.json`
+por IaC completo com `datadog_monitor` e `datadog_webhook`.
 
 ### Trigger
 
-Manual: Actions → **Alerts Deploy** → Run workflow → branch `deploy`.
+Manual: Actions → **Datadog Terraform — Apply** → Run workflow → inputs:
+
+- `action`: `plan` (dry-run com artifact) ou `apply` (aplica no Datadog)
+- `threshold_percent`: default `5`
+- `warning_percent`: default `3`
 
 ### Pré-requisitos
 
-- Datadog API Key e App Key no SSM.
-- Microsserviços instrumentados (Bloco 3) enviando traces ao Datadog APM.
-- Documentação detalhada: `docs/alerting.md`.
+- Datadog API Key e App Key no SSM (ver `DEPLOY.md` seção 0.3).
+- PAT do GitHub no SSM (`/togglemaster/prod/github/webhook-pat`).
+- Microsserviços rodando com carga, pra métricas APM existirem no Datadog
+  (senão o monitor nasce em `No Data`).
+- Documentação detalhada: `terraform/README.md`.
+
+### Primeira execução em ambiente que já tinha monitor manual
+
+Se o monitor ou webhook já existir no painel (criado manualmente ou pelo
+workflow legado), o apply falha com `Resource already exists`. Solução:
+`terraform import` dos recursos antes do primeiro apply. Ver
+`TROUBLESHOOTING.md` seção 20.
+
+---
+
+## Datadog Terraform — Destroy (`datadog-terraform-destroy.yml`)
+
+### Papel
+
+Destroi o monitor e o webhook do Datadog gerenciados pela camada
+`terraform/`. **Não** toca em credenciais no SSM, integrações manuais
+(JSM, Slack) ou o workflow `self-healing.yml`.
+
+### Trigger
+
+Manual: Actions → **Datadog Terraform — Destroy** → Run workflow.
+
+### Segurança — double confirmation
+
+Input obrigatório `confirm_destroy` **deve** ser literal `destroy-datadog`.
+Qualquer outra coisa falha no primeiro step, antes de qualquer operação
+real contra o Datadog.
+
+### Quando usar
+
+- Trial do Datadog expirou e você vai migrar pra conta nova.
+- Reset total pra começar do zero (ex: mudanças grandes na estrutura).
+- Arquivar o projeto depois do vídeo.
+
+Para o fluxo normal (ajustar threshold, trocar URL do webhook, etc.) use
+o `Datadog Terraform — Apply` — ele já cuida de updates in-place.
 
 ---
 

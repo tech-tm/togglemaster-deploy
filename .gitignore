@@ -33,13 +33,25 @@ charts/
 *.tgz
 .helm/
 
-# --- Terraform (defensivo - este repo nao usa, mas evita acidentes) ---
+# --- Terraform ---
+# A pasta 'terraform/' da camada Datadog (gerenciada por este repo) e
+# incluida; artefatos locais e tfvars de override pessoal sao ignorados.
 .terraform/
 *.tfstate
 *.tfstate.*
-*.tfvars
 *.tfplan
 .terraform.lock.hcl
+
+# Ignora qualquer *.tfvars por default (podem conter secrets de override)...
+*.tfvars
+
+# ...mas permite o tfvars principal da camada Datadog, que NAO contem
+# segredos (todos os valores sensiveis vem do SSM via providers.tf).
+!terraform/terraform.tfvars
+
+# Overrides locais (uso pessoal, nao versionar)
+*.auto.tfvars
+*.local.tfvars
 
 # --- IDE / editor ---
 .vscode/
