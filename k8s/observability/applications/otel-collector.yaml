@@ -96,13 +96,33 @@ spec:
 
         # ----------------------------------------------------------------
         # ServiceMonitor: o Prometheus (kube-prometheus-stack) descobre
-        # automaticamente e faz scrape de /metrics do exporter prometheus
-        # (porta 8889) e das metricas internas do collector (porta 8888).
+        # automaticamente e faz scrape das metricas do collector.
+        #
+        # IMPORTANTE sobre as portas:
+        #   - 'metrics' (8888): metricas INTERNAS do proprio collector
+        #     (otelcol_*). Esta DESATIVADA no v0.123+ (service.telemetry.
+        #     metrics.address foi removida). Deixar o default scrape aqui
+        #     causa 'connection refused' no Prometheus.
+        #   - 'prometheus' (8889): exporter 'prometheus' que converte as
+        #     metricas OTLP recebidas (http.server.request.duration, etc.)
+        #     em formato Prometheus. E AQUI que as metricas das apps saem.
+        #
+        # Por default o chart cria ServiceMonitor so pra porta 'metrics'
+        # (8888, vazia). 'extraPortsScrapeMonitors' adiciona scrape para
+        # a porta 'prometheus' (8889, onde estao as metricas reais).
         # ----------------------------------------------------------------
         serviceMonitor:
           enabled: true
           extraLabels:
             release: kube-prometheus-stack
+          # Scrape adicional da porta 'prometheus' (8889) onde o exporter
+          # 'prometheus' expoe as metricas das apps convertidas de OTLP.
+          # Sem isso, o dashboard de 'Requisicoes HTTP por servico' do
+          # Grafana fica vazio mesmo com os servicos emitindo metricas.
+          extraPortsScrapeMonitors:
+            - port: prometheus
+              path: /metrics
+              interval: 30s
 
         # ----------------------------------------------------------------
         # Configuracao do pipeline OTel.
