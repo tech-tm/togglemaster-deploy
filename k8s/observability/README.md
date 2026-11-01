@@ -67,6 +67,15 @@ app-of-apps.yaml  (Application pai, aplicada no bootstrap via envsubst)
 - `metrics` → Datadog + Prometheus (via scrape em `:8889`)
 - `logs` → Datadog (logs estruturados da aplicação; logs de container ficam com o Promtail)
 
+> **Nota sobre o scrape na porta `:8889`:** o chart `opentelemetry-collector`
+> cria um ServiceMonitor por default apontando pra porta `metrics` (8888),
+> que é a de métricas INTERNAS do próprio Collector — e que foi desabilitada
+> no OTel Collector v0.123+ (`service.telemetry.metrics.address` removida).
+> Pra o Prometheus efetivamente scrapear as métricas das apps (expostas na
+> porta `prometheus` = 8889 pelo exporter `prometheus`), o values do chart
+> inclui `serviceMonitor.extraPortsScrapeMonitors` com a porta 8889.
+> Sem isso, o dashboard "Requisições HTTP por serviço" do Grafana fica vazio.
+
 ## Dashboard customizado
 
 `grafana/dashboard-togglemaster.yaml` é um ConfigMap (label `grafana_dashboard: "1"`)
