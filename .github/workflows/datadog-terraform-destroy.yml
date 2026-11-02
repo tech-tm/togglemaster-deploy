@@ -1,0 +1,116 @@
+name: Datadog Terraform — Destroy
+
+# ----------------------------------------------------------------------
+# Destroi os recursos do painel Datadog gerenciados por esta camada:
+#   - datadog_monitor.auth_5xx
+#   - datadog_webhook.self_healing
+#
+# NUNCA destroi:
+#   - credenciais no SSM Parameter Store (api-key, app-key, github-pat)
+#   - bucket S3 do state (tech4-tfstates)
+#   - integracoes manuais (JSM Ops <-> Datadog, JSM <-> Slack)
+#   - workflow self-healing.yml (recebe o repository_dispatch)
+#
+# SEGURANCA: double-confirmation obrigatoria. O input 'confirm_destroy'
+# deve ser literalmente 'destroy-datadog', senao o workflow falha logo
+# no primeiro step. Evita destroy acidental.
+# ----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Digite literalmente "destroy-datadog" para confirmar'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_WORKING_DIR: terraform
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validar confirmacao
+        # Primeiro step de todos. Se o input estiver errado, o workflow
+        # falha aqui — antes mesmo de clonar o repo ou configurar AWS.
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "destroy-datadog" ]; then
+            echo "::error::Confirmacao incorreta."
+            echo "::error::Esperado: 'destroy-datadog'"
+            echo "::error::Recebido: '${{ inputs.confirm_destroy }}'"
+            exit 1
+          fi
+          echo "✅ Confirmacao validada — prosseguindo com destroy."
+
+      - name: Checkout (branch deploy)
+        uses: actions/checkout@v4
+        with:
+          ref: deploy
+
+      - name: Configure AWS credentials
+        # Necessario para:
+        #  - acessar o backend S3 (bucket 'tech4-tfstates')
+        #  - ler os parametros SSM com as credenciais do Datadog
+        #    (precisa delas pro provider autenticar na API ao destruir)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -input=false -auto-approve
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "# Datadog Terraform — Destroy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ **Destroy concluido**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Removidos do painel Datadog" >> $GITHUB_STEP_SUMMARY
+            echo "- Monitor \`[ToggleMaster] auth-service - taxa de erros 5xx > N%\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Webhook \`togglemaster-self-healing\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Preservados (NAO foram destruidos)" >> $GITHUB_STEP_SUMMARY
+            echo "- Credenciais SSM: \`api-key\`, \`app-key\`, \`webhook-pat\`" >> $GITHUB_STEP_SUMMARY
+            echo "- State S3: \`tech4-tfstates/deploy/datadog/terraform.tfstate\` (vazio apos destroy, versao anterior fica em S3 versioning)" >> $GITHUB_STEP_SUMMARY
+            echo "- Integracoes manuais: JSM Ops <-> Datadog, JSM <-> Slack" >> $GITHUB_STEP_SUMMARY
+            echo "- Workflow \`self-healing.yml\` (nao recebe mais chamadas, mas segue existindo)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Para recriar" >> $GITHUB_STEP_SUMMARY
+            echo "Rode o workflow \`Datadog Terraform — Apply\` com \`action=apply\`." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Destroy falhou**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Status: \`${{ job.status }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Verifique os logs. Causas comuns:" >> $GITHUB_STEP_SUMMARY
+            echo "- Credenciais AWS Academy expiradas" >> $GITHUB_STEP_SUMMARY
+            echo "- Recursos removidos manualmente no painel Datadog (drift)" >> $GITHUB_STEP_SUMMARY
+            echo "- API Key / App Key Datadog invalidas no SSM" >> $GITHUB_STEP_SUMMARY
+          fi
