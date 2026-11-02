@@ -11,6 +11,9 @@ name: Observability Deploy
 #   Bloco 2 - OpenTelemetry:
 #     * otel-collector         (recebe OTLP e exporta p/ Prometheus + Datadog)
 #
+#   Infra de cluster:
+#     * metrics-server         (API metrics.k8s.io usada pelos HPAs)
+#
 # Este workflow NAO instala ArgoCD. Pre-requisito: ArgoCD ja esta instalado
 # no cluster (via workflow 'Install ArgoCD'). Aqui apenas aplicamos o
 # App-of-Apps que cria as Applications filhas e aguardamos cada uma
@@ -206,6 +209,28 @@ jobs:
 
       - name: Aguardar grafana-config (datasource Loki + dashboard)
         run: /tmp/wait_app.sh grafana-config ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Aguardar metrics-server (API metrics.k8s.io para os HPAs)
+        run: /tmp/wait_app.sh metrics-server ${{ inputs.wait_timeout_seconds || '600' }}
+
+      - name: Validar API metrics.k8s.io disponivel
+        # Sem essa APIService, os HPAs ficam com TARGETS <unknown> e a
+        # Application 'togglemaster' fica Degraded no ArgoCD.
+        run: |
+          for i in $(seq 1 12); do
+            STATUS=$(kubectl get apiservice v1beta1.metrics.k8s.io \
+              -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+            if [ "$STATUS" = "True" ]; then
+              echo "✓ APIService v1beta1.metrics.k8s.io disponivel."
+              exit 0
+            fi
+            echo "Aguardando APIService ficar Available ($i/12)..."
+            sleep 10
+          done
+          echo "::error::APIService v1beta1.metrics.k8s.io nao ficou disponivel em 2 min."
+          kubectl get apiservice v1beta1.metrics.k8s.io -o yaml || true
+          kubectl logs -n kube-system deploy/metrics-server --tail=30 || true
+          exit 1
 
       - name: Aguardar otel-collector
         # OTel Collector pode ficar "Degraded" se o secret 'datadog-secret'

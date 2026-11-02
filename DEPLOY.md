@@ -411,7 +411,15 @@ Na UI do ArgoCD você vê as Applications sincronizando (`togglemaster` nessa fa
 **`togglemaster-deploy`** → Actions → **Observability Deploy** → Run workflow → branch `deploy`
 
 Esse workflow aplica o App-of-Apps da observabilidade e aguarda cada Application
-sincronizar. **18 steps granulares** — se algo falhar, você vê exatamente em qual.
+sincronizar (`kube-prometheus-stack`, `loki-stack`, `grafana-config`,
+`metrics-server`, `otel-collector`). Steps granulares — se algo falhar, você vê
+exatamente em qual.
+
+> **metrics-server:** o EKS não instala o metrics-server por padrão. Ele é
+> necessário pros HPAs do `evaluation-service` e do `analytics-service`. Sem
+> ele, os HPAs ficam com `TARGETS <unknown>` e a Application `togglemaster`
+> aparece como **Degraded** no ArgoCD, mesmo com todos os pods Running.
+> Ele sobe pelo chart `metrics-server` 3.14.0 no namespace `kube-system`.
 
 Duração: ~10 min (os Helm charts de Prometheus/Loki demoram).
 
@@ -431,6 +439,10 @@ kubectl get applications -n argocd \
 
 # Pods de pé no namespace observability
 kubectl get pods -n observability
+
+# metrics-server: APIService disponível (AVAILABLE=True) e métricas reais
+kubectl get apiservice v1beta1.metrics.k8s.io
+kubectl top nodes
 
 # Grafana (abre no browser)
 kubectl port-forward -n observability svc/kube-prometheus-stack-grafana 3000:80
@@ -803,7 +815,7 @@ Todos esses são aplicados pelos workflows na nova rodada:
 
 - Infra Terraform (EKS, RDS, Redis, SQS, DynamoDB, ECR) — `Terraform Apply`.
 - ArgoCD + `ignoreDifferences` globais — `Install ArgoCD` aplica o `k8s/argocd/values.yaml`.
-- Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) com todos os fixes — `Observability Deploy`.
+- Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector, metrics-server) com todos os fixes — `Observability Deploy`.
 - Microsserviços com instrumentação OTel e credenciais AWS nos deployments — `GitOps` + ArgoCD.
 - Monitor do Datadog + webhook de self-healing — `Datadog Terraform — Apply` (camada `terraform/`).
 - Workflow de self-healing — já versionado.

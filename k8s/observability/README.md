@@ -12,8 +12,11 @@ Nada é aplicado manualmente: o ArgoCD sincroniza os Helm charts diretamente dos
 | **Loki** | chart `loki-stack` | Centralização e indexação dos logs | 1 |
 | **Promtail** | chart `loki-stack` | DaemonSet que coleta logs dos contêineres e envia ao Loki | 1 |
 | **OTel Collector** | chart `opentelemetry-collector` (contrib) | Peça central: recebe OTLP e roteia para Prometheus e Datadog | 2 |
+| **metrics-server** | chart `metrics-server` 3.14.0 | API `metrics.k8s.io` (CPU/memória) consumida pelos HPAs | infra |
 
-Tudo roda no namespace `observability`.
+Tudo roda no namespace `observability`, exceto o **metrics-server**, que roda
+em `kube-system` (namespace padrão dele, por registrar a APIService de cluster
+`v1beta1.metrics.k8s.io`).
 
 ## Arquitetura GitOps (App of Apps)
 
@@ -24,6 +27,7 @@ app-of-apps.yaml  (Application pai, aplicada no bootstrap via envsubst)
               ├── kube-prometheus-stack.yaml   → Helm: Prometheus + Grafana
               ├── loki-stack.yaml              → Helm: Loki + Promtail
               ├── otel-collector.yaml          → Helm: OTel Collector (contrib)
+              ├── metrics-server.yaml          → Helm: metrics-server (kube-system)
               └── grafana-config.yaml          → ConfigMaps (datasource Loki + dashboard)
 ```
 

@@ -32,6 +32,7 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`](#18-application-togglemaster-fica-outofsync-em-specreplicas)
 - [19. Terraform: `ResourceNotFoundException` ao fazer apply](#19-terraform-resourcenotfoundexception-ao-fazer-apply)
 - [20. Datadog Terraform: `Resource already exists` ou `401 Unauthorized`](#20-datadog-terraform-resource-already-exists-ou-401-unauthorized)
+- [21. Application `togglemaster` Degraded com todos os pods Running (HPA sem metrics-server)](#21-application-togglemaster-degraded-com-todos-os-pods-running-hpa-sem-metrics-server)
 
 ---
 
@@ -1219,6 +1220,68 @@ Error: couldn't find resource (/togglemaster/prod/github/webhook-pat)
 
 PAT GitHub não foi cadastrado no SSM. Siga `DEPLOY.md` → seção
 **0.3 → PAT do GitHub (para o webhook de self-healing)**.
+
+---
+
+## 21. Application `togglemaster` Degraded com todos os pods Running (HPA sem metrics-server)
+
+### Sintoma
+
+- ArgoCD mostra a Application `togglemaster` como **Degraded**.
+- `kubectl get pods -n togglemaster` mostra os 5 serviços `Running`.
+- `kubectl get hpa -n togglemaster` mostra `TARGETS <unknown>/70%`.
+
+### Causa
+
+A saúde da Application é a pior entre **todos** os recursos que ela gerencia,
+não só os Deployments. Os HPAs do `evaluation-service` e do `analytics-service`
+leem CPU pela API `metrics.k8s.io`, que é implementada pelo **metrics-server**.
+O EKS não instala o metrics-server por padrão, e o Prometheus do
+`kube-prometheus-stack` não substitui essa API. Sem ela, o HPA fica com
+`ScalingActive=False`, e o health check do ArgoCD pra HPA marca **Degraded**.
+
+### Diagnóstico
+
+```bash
+# Quais recursos da Application não estão Healthy
+kubectl get application togglemaster -n argocd -o json \
+  | jq -r '.status.resources[] | select(.health.status != null and .health.status != "Healthy") | "\(.kind)/\(.name) → \(.health.status)"'
+
+# APIService das métricas: NotFound ou AVAILABLE=False confirma o problema
+kubectl get apiservice v1beta1.metrics.k8s.io
+
+# Evento do HPA
+kubectl describe hpa evaluation-service-hpa -n togglemaster | tail -15
+# Procure: FailedGetResourceMetric / unable to get metrics
+```
+
+### Solução
+
+**Já corrigido no repo:** o metrics-server (chart 3.14.0) é instalado pela
+Application `k8s/observability/applications/metrics-server.yaml`, aplicada
+pelo workflow **Observability Deploy**. Se o problema aparecer:
+
+1. Confirme que a Application `metrics-server` existe e está `Synced + Healthy`:
+   ```bash
+   kubectl get application metrics-server -n argocd
+   ```
+2. Se não existir, rode de novo o workflow **Observability Deploy**.
+3. Se existir mas a APIService não ficar disponível, veja os logs:
+   ```bash
+   kubectl logs -n kube-system deploy/metrics-server --tail=30
+   ```
+   - `x509: cannot validate certificate` → adicionar `args: [--kubelet-insecure-tls]`
+     nos values da Application.
+   - `FailedDiscoveryCheck` na APIService → o Security Group dos nodes precisa
+     liberar a porta 10250 vinda do control plane do EKS.
+
+Depois que a APIService fica `Available`, os HPAs leem métricas em ~1 min e a
+Application volta pra **Healthy**. Pra acelerar:
+
+```bash
+kubectl -n argocd annotate application togglemaster \
+  argocd.argoproj.io/refresh=hard --overwrite
+```
 
 ---
 
