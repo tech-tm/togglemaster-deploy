@@ -7,8 +7,8 @@ Datadog que antes eram criados manualmente ou via workflow dedicado.
 
 | Recurso Terraform | Função |
 |---|---|
-| `datadog_monitor.auth_5xx` | Monitor de taxa de erros 5xx do `auth-service` > 5% (requisito do Bloco 4 do PDF) |
-| `datadog_webhook.self_healing` | Webhook chamado pelo monitor pra disparar o workflow `self-healing.yml` do GitHub Actions |
+| `datadog_monitor.services_5xx["<serviço>"]` | **1 monitor por microsserviço** (auth, flag, targeting, evaluation, analytics) de taxa de erros 5xx > 5%. Criado via `for_each` (requisito do Bloco 4 do PDF) |
+| `datadog_webhook.self_healing` | Webhook chamado pelos monitores pra disparar o workflow `self-healing.yml`. Passa o serviço que alertou via `$TAGS[service]` |
 
 Ambos os recursos ganham a tag `managed-by:terraform` pra ficar claro no
 painel do Datadog o que é gerenciado por código vs criado manualmente.
@@ -23,8 +23,8 @@ Rode este Terraform **somente depois** que:
 4. ✅ Microsserviços rodando (`GitOps`)
 5. ✅ **Métricas APM chegando ao Datadog** (gerar carga + aguardar ~10 min)
 
-Sem o passo 5, o monitor nasce em `No Data` — a métrica
-`trace.http.request.hits{service:auth-service}` só existe depois que o
+Sem o passo 5, os monitores nascem em `No Data` — a métrica
+`trace.http.request.hits{service:<serviço>}` só existe depois que o
 `datadog connector` do OTel Collector começa a receber spans e agregar
 APM Stats.
 
@@ -104,18 +104,21 @@ AWS_PROFILE=aws_fiap terraform apply
 ```
 
 ✅ **Como saber se funcionou:**
-- Datadog → **Monitors** → o monitor `[ToggleMaster] auth-service - taxa
-  de erros 5xx > 5%` aparece
+- Datadog → **Monitors** → os 5 monitores `[ToggleMaster] <serviço> - taxa
+  de erros 5xx > 5%` aparecem
 - Datadog → **Integrations** → **Webhooks** → `togglemaster-self-healing`
   aparece
 
 ## ↩️ Rollback
 
-### Reverter apenas o monitor (preservar webhook)
+### Reverter apenas os monitores (preservar webhook)
 
 ```bash
 cd togglemaster-deploy/terraform
-AWS_PROFILE=aws_fiap terraform apply -target=datadog_monitor.auth_5xx
+# Todos os monitores de uma vez:
+AWS_PROFILE=aws_fiap terraform apply -target='datadog_monitor.services_5xx'
+# Ou um serviço específico:
+AWS_PROFILE=aws_fiap terraform apply -target='datadog_monitor.services_5xx["auth-service"]'
 ```
 
 Útil se, por exemplo, você mudou a query e quer desfazer sem tocar no
@@ -150,13 +153,13 @@ Pra restaurar uma versão específica, veja a doc do S3 object versioning.
 
 ### "Resource already exists" durante o `apply`
 
-**Sintoma:** `apply` falha porque o monitor ou webhook já foi criado
-manualmente (ou pelo workflow legado `alerts-deploy.yml`).
+**Sintoma:** `apply` falha porque algum monitor ou o webhook já existe no
+painel (criado manualmente ou por uma aplicação anterior fora deste state).
 
-**Solução:** importar o recurso existente pro state antes do apply:
+**Solução:** importar cada recurso existente pro state antes do apply. Como
+há um monitor por serviço, o endereço é `datadog_monitor.services_5xx["<serviço>"]`:
 
 ```bash
-# Descobrir o ID do monitor atual (via API)
 DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap \
   --name /togglemaster/prod/datadog/api-key --with-decryption \
   --query 'Parameter.Value' --output text)
@@ -164,16 +167,27 @@ DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap \
   --name /togglemaster/prod/datadog/app-key --with-decryption \
   --query 'Parameter.Value' --output text)
 
-MONITOR_ID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=%5BToggleMaster%5D%20auth-service" \
-  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
-  | jq -r '.[0].id')
-
 cd togglemaster-deploy/terraform
-AWS_PROFILE=aws_fiap terraform import datadog_monitor.auth_5xx $MONITOR_ID
+
+# Importa cada monitor pelo nome (um por serviço)
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  ENC=$(printf '[ToggleMaster] %s' "$svc" | jq -sRr @uri)
+  MID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=$ENC" \
+    -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
+    | jq -r '.[0].id // empty')
+  [ -n "$MID" ] && AWS_PROFILE=aws_fiap terraform import \
+    "datadog_monitor.services_5xx[\"$svc\"]" "$MID"
+done
+
+# Webhook (pelo nome)
 AWS_PROFILE=aws_fiap terraform import datadog_webhook.self_healing togglemaster-self-healing
 ```
 
 Depois rode `terraform plan` — deve mostrar poucas ou nenhuma mudança.
+
+> Em geral é mais simples **destruir no painel** os monitores/webhook órfãos
+> e deixar o `apply` recriar do zero, já que o histórico de alertas é
+> descartável no contexto do lab.
 
 ### `401 Unauthorized` no `plan`/`apply`
 
@@ -218,9 +232,9 @@ terraform/
 ├── providers.tf      # Providers aws + datadog, data sources SSM
 ├── variables.tf      # Variáveis (env, team, thresholds, repos, SSM names)
 ├── terraform.tfvars  # Valores padrão versionados (sem secrets)
-├── main.tf           # locals (monitor_message, common_tags)
-├── monitors.tf       # datadog_monitor.auth_5xx
-├── webhooks.tf       # datadog_webhook.self_healing
-├── outputs.tf        # monitor_id, monitor_url, webhook_name
+├── main.tf           # locals (monitor_message genérico, common_tags, lista de services)
+├── monitors.tf       # datadog_monitor.services_5xx (for_each nos 5 serviços)
+├── webhooks.tf       # datadog_webhook.self_healing (service via $TAGS[service])
+├── outputs.tf        # monitor_ids, monitor_urls (mapas), webhook_name
 └── README.md         # este arquivo
 ```

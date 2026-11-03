@@ -22,15 +22,15 @@ graph TD
     A[Microsservicos<br/>instrumentados OTel] -->|OTLP| B[OTel Collector]
     B -->|traces + metrics| C[Datadog APM]
 
-    C -->|calcula taxa 5xx| D[Datadog Monitor<br/>auth-service 5xx > 5%]
+    C -->|calcula taxa 5xx por servico| D[Datadog Monitors<br/>1 por servico: 5xx > 5%]
 
     D -->|@jsm_ops| E[Jira Service Management<br/>Operations]
     D -->|@webhook-togglemaster<br/>self-healing| F[GitHub Actions<br/>repository_dispatch]
 
     E -->|integracao Slack| G[Slack #alerts]
-    F -->|workflow self-healing.yml| H[kubectl rollout restart<br/>deployment/auth-service]
+    F -->|workflow self-healing.yml<br/>service = TAGS.service| H[kubectl rollout restart<br/>deployment/SERVICO-QUE-ALERTOU]
 
-    H -->|~1min depois| I[auth-service com<br/>pods novos]
+    H -->|~1min depois| I[servico com<br/>pods novos]
     I -.->|~5min| D
 ```
 
@@ -38,12 +38,18 @@ graph TD
 
 1. OTel Collector recebe traces dos microsserviços (Bloco 2 + 3).
 2. Collector exporta pro Datadog APM.
-3. Datadog Monitor avalia a cada minuto a taxa de erros `5xx / total` nos últimos 5 min.
-4. Se > 5% dispara, notifica dois destinos em paralelo:
+3. Há **um monitor por microsserviço** (auth, flag, targeting, evaluation,
+   analytics). Cada um avalia a taxa de erros `5xx / total` do seu serviço
+   nos últimos 5 min.
+4. Se > 5% dispara, o monitor notifica dois destinos em paralelo:
    - `@jsm_ops` → cria alerta no JSM Operations, encaminha pro Slack.
-   - `@webhook-togglemaster-self-healing` → GitHub Actions `repository_dispatch`.
-5. GitHub Actions executa `kubectl rollout restart deployment/auth-service`.
-6. ~1 min depois, pods novos entram em serviço; Datadog monitora e o alerta se auto-resolve se o rollout curar o problema.
+   - `@webhook-togglemaster-self-healing` → GitHub Actions `repository_dispatch`,
+     com o nome do serviço que alertou (via `$TAGS[service]` do Datadog).
+5. GitHub Actions executa `kubectl rollout restart deployment/<serviço-que-alertou>`
+   — o `self-healing.yml` lê o serviço do payload e valida contra a whitelist
+   dos 5 antes de reiniciar.
+6. ~1 min depois, pods novos entram em serviço; Datadog monitora e o alerta se
+   auto-resolve se o rollout curar o problema.
 
 ---
 
@@ -51,8 +57,8 @@ graph TD
 
 | Componente | Fonte | Responsabilidade |
 |---|---|---|
-| **Datadog Monitor** | `terraform/monitors.tf` (Terraform) | Define a condição do alerta (5xx > N%) |
-| **Datadog Webhook** | `terraform/webhooks.tf` (Terraform) | Chama o GitHub Actions via `repository_dispatch` |
+| **Datadog Monitors** | `terraform/monitors.tf` (Terraform, `for_each`) | 1 monitor por serviço: define a condição do alerta (5xx > N%) |
+| **Datadog Webhook** | `terraform/webhooks.tf` (Terraform) | Chama o GitHub Actions via `repository_dispatch`, passando o serviço via `$TAGS[service]` |
 | **Workflow `datadog-terraform-apply.yml`** | `.github/workflows/` | Aplica o monitor e o webhook via `terraform apply` |
 | **Workflow `datadog-terraform-destroy.yml`** | `.github/workflows/` | Destroi monitor + webhook (com double-confirmation) |
 | **Workflow `self-healing.yml`** | `.github/workflows/` | Reage ao `repository_dispatch`, faz `kubectl rollout restart` |
@@ -193,8 +199,10 @@ GitHub → togglemaster-deploy → Actions → Datadog Terraform — Apply → R
 2. Terraform init com backend S3 (`tech4-tfstates`, key `deploy/datadog/terraform.tfstate`).
 3. Terraform plan (sempre) → artifact disponível pra download.
 4. Terraform apply (se `action=apply`):
-   - Cria/atualiza `datadog_monitor.auth_5xx` (query 5xx > N%, mensagem com `@jsm_ops` + `@webhook-togglemaster-self-healing`).
-   - Cria/atualiza `datadog_webhook.self_healing` (URL `api.github.com/.../dispatches`, headers com PAT).
+   - Cria/atualiza os 5 `datadog_monitor.services_5xx["<serviço>"]` (query 5xx > N%
+     por serviço, mensagem com `@jsm_ops` + `@webhook-togglemaster-self-healing`).
+   - Cria/atualiza `datadog_webhook.self_healing` (URL `api.github.com/.../dispatches`,
+     payload com `service = $TAGS[service]`, headers com PAT).
 
 > O webhook se chama `togglemaster-self-healing`, por isso a mensagem
 > do monitor referencia `@webhook-togglemaster-self-healing` (o Datadog
@@ -213,7 +221,7 @@ Detalhes técnicos (variáveis, outputs, rollback granular, troubleshooting):
 Linha do tempo (aproximada):
 
 ```text
-T+0s      auth-service começa a retornar 5xx (ex: RDS caiu)
+T+0s      um serviço começa a retornar 5xx (ex: auth-service, RDS caiu)
 T+30s     Primeiras métricas chegam ao Datadog via OTel Collector
 T+60s     Datadog Monitor avalia (window last_5m)
 T+5min    Taxa de erros ultrapassa 5% → alerta dispara (status: alert)

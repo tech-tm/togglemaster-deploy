@@ -1121,7 +1121,6 @@ Rodar localmente (não via workflow, pois `terraform import` precisa ser interat
 ```bash
 cd togglemaster-deploy/terraform
 
-# 1. Descobrir ID do monitor atual na API
 DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap \
   --name /togglemaster/prod/datadog/api-key --with-decryption \
   --query 'Parameter.Value' --output text)
@@ -1129,14 +1128,15 @@ DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap \
   --name /togglemaster/prod/datadog/app-key --with-decryption \
   --query 'Parameter.Value' --output text)
 
-MONITOR_ID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=%5BToggleMaster%5D%20auth-service" \
-  -H "DD-API-KEY: $DD_API_KEY" \
-  -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
-  | jq -r '.[0].id')
-echo "Monitor ID: $MONITOR_ID"
-
-# 2. Importar monitor
-AWS_PROFILE=aws_fiap terraform import datadog_monitor.auth_5xx $MONITOR_ID
+# 1+2. Importar cada monitor (ha um por servico) pelo nome
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  ENC=$(printf '[ToggleMaster] %s' "$svc" | jq -sRr @uri)
+  MID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=$ENC" \
+    -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
+    | jq -r '.[0].id // empty')
+  [ -n "$MID" ] && AWS_PROFILE=aws_fiap terraform import \
+    "datadog_monitor.services_5xx[\"$svc\"]" "$MID"
+done
 
 # 3. Importar webhook (pelo nome)
 AWS_PROFILE=aws_fiap terraform import datadog_webhook.self_healing togglemaster-self-healing
@@ -1154,7 +1154,7 @@ Se o plan mostrar diferenças aceitáveis (ex: adicionar tag `managed-by:terrafo
 
 Mais simples, mas gera gap de ~2 min sem alerta ativo:
 
-1. Datadog UI → Monitors → excluir o monitor
+1. Datadog UI → Monitors → excluir os monitores `[ToggleMaster] <serviço>`
 2. Datadog UI → Integrations → Webhooks → excluir `togglemaster-self-healing`
 3. Rodar workflow **Datadog Terraform — Apply** com `action=apply`
 
