@@ -7,7 +7,12 @@
 # ----------------------------------------------------------------------
 
 locals {
-  # Mensagem do monitor de 5xx auth-service.
+  # Mensagem generica do monitor de 5xx (multi-servico).
+  #
+  # Compartilhada pelos 5 monitores criados via for_each em monitors.tf.
+  # Usa a variavel {{service.name}} do Datadog, que e expandida em tempo
+  # de disparo com o servico que efetivamente alertou — assim a mesma
+  # mensagem serve para auth, flag, targeting, evaluation e analytics.
   #
   # Formatacao em Markdown — e renderizada em:
   #   - UI do Datadog Monitors
@@ -17,25 +22,24 @@ locals {
   # Os '@mentions' no final sao obrigatorios: sao eles que acionam o
   # fluxo de incident management (JSM) e self-healing (GitHub Actions).
   #
-  # Convencao do Datadog: variaveis como {{host.name}} sao expandidas em
-  # tempo de disparo. Variaveis Terraform (${}) sao expandidas aqui.
+  # Convencao do Datadog: variaveis {{...}} sao expandidas em tempo de
+  # disparo. Variaveis Terraform (${}) sao expandidas no apply.
   monitor_message = <<-EOT
-    ## auth-service com taxa de erros HTTP 5xx acima de ${var.threshold_percent}%
+    ## {{service.name}} com taxa de erros HTTP 5xx acima de ${var.threshold_percent}%
 
-    **Servico afetado:** `auth-service`
+    **Servico afetado:** `{{service.name}}`
     **Namespace:** `togglemaster`
     **Severidade:** critical
 
     ### Diagnostico rapido
 
-    - Service Map: {{host.name}}
-    - Logs do servico: filtre `service:auth-service status:error` no Datadog Logs
+    - Logs do servico: filtre `service:{{service.name}} status:error` no Datadog Logs
     - Dashboard Grafana: painel 'Taxa de erros HTTP 5xx por servico'
 
     ### Automacao acionada
 
     - **Incident management**: incidente aberto automaticamente -> notificacao no canal do ChatOps
-    - **Self-Healing**: `kubectl rollout restart deployment/auth-service` executado via GitHub Actions
+    - **Self-Healing**: `kubectl rollout restart deployment/{{service.name}}` executado via GitHub Actions
 
     ### Links
 

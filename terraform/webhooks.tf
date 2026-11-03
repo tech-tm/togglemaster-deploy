@@ -4,10 +4,15 @@
 # Recurso 'datadog_webhook.self_healing' — substitui a configuracao
 # manual que era feita no painel Datadog (passo 5 do docs/alerting.md).
 #
-# Quando o monitor 'auth_5xx' dispara, o Datadog chama este webhook,
-# que faz POST em https://api.github.com/.../dispatches disparando o
-# workflow 'self-healing.yml' do GitHub Actions (que executa o
-# 'kubectl rollout restart' no deployment do auth-service).
+# Quando qualquer um dos monitores 'services_5xx' dispara, o Datadog
+# chama este webhook, que faz POST em https://api.github.com/.../dispatches
+# disparando o workflow 'self-healing.yml' do GitHub Actions (que executa
+# 'kubectl rollout restart' no deployment DO SERVICO QUE ALERTOU).
+#
+# O nome do servico e passado dinamicamente via $TAGS[service]: cada
+# monitor tem a tag 'service:<nome>', e o Datadog expande $TAGS[service]
+# com esse valor em tempo de disparo. Assim o self-healing reinicia o
+# servico correto (auth, flag, targeting, evaluation ou analytics).
 #
 # Nome do webhook: 'togglemaster-self-healing' (IDENTICO ao atual,
 # para que a referencia '@webhook-togglemaster-self-healing' na
@@ -34,13 +39,18 @@ resource "datadog_webhook" "self_healing" {
   url       = "https://api.github.com/repos/${var.github_repo}/dispatches"
   encode_as = "json"
 
-  # Payload enviado ao GitHub. Os placeholders ($ALERT_TITLE, $LINK,
-  # $ALERT_ID) sao substituidos pelo Datadog em tempo de execucao com
-  # os dados reais do alerta. Nao sao variaveis Terraform.
+  # Payload enviado ao GitHub. Os placeholders ($TAGS[service], $ALERT_TITLE,
+  # $LINK, $ALERT_ID) sao variaveis do DATADOG, substituidas em tempo de
+  # disparo — nao sao variaveis Terraform.
+  #
+  # $TAGS[service] le a tag 'service:<nome>' do monitor que disparou
+  # (definida em monitors.tf). O workflow self-healing.yml valida esse
+  # valor contra uma whitelist antes de reiniciar — se vier vazio ou
+  # invalido, ele falha com seguranca em vez de reiniciar o servico errado.
   payload = jsonencode({
     event_type = "datadog-alert"
     client_payload = {
-      service    = "auth-service"
+      service    = "$TAGS[service]"
       alert_name = "$ALERT_TITLE"
       alert_url  = "$LINK"
       alert_id   = "$ALERT_ID"
