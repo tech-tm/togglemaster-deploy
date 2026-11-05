@@ -77,7 +77,7 @@ data:
           "description": "Baseado em metricas OTel/Prometheus (http.server.request.count / http_requests_total). Depende da instrumentacao dos microsservicos (Bloco 3).",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
-          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
           "targets": [
             {
               "refId": "A",
