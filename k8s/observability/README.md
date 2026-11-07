@@ -31,6 +31,12 @@ app-of-apps.yaml  (Application pai, aplicada no bootstrap via envsubst)
               └── grafana-config.yaml          → ConfigMaps (datasource Loki + dashboard)
 ```
 
+- ⚠️ **A pasta `applications/` só pode conter recursos do tipo `Application`.**
+  Ela é lida pelo App-of-Apps, que aplica tudo de uma vez. Um recurso de outro
+  tipo cujo CRD ainda não existe (ex: `ServiceMonitor`, que só passa a existir
+  depois que o `kube-prometheus-stack` é instalado) faz o sync inteiro falhar e
+  **nenhuma Application filha é criada**. Recursos desse tipo vão em `grafana/`
+  (aplicados pela Application `grafana-config`, depois do CRD existir).
 - As Applications de Helm apontam **direto** para os repositórios de charts oficiais —
   sem renderizar, o ArgoCD resolve o Helm.
 - O `grafana-config` aplica os manifests da pasta `grafana/` (datasource do Loki e o
