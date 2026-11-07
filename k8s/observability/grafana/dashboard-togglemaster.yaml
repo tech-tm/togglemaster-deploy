@@ -77,11 +77,11 @@ data:
           "description": "Baseado em metricas OTel/Prometheus (http.server.request.count / http_requests_total). Depende da instrumentacao dos microsservicos (Bloco 3).",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
-          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\"}[5m])) by (service_name)",
+              "expr": "sum(rate(http_server_duration_milliseconds_count{k8s_namespace_name=\"$namespace\"}[1m])) by (service_name)",
               "legendFormat": "{{service_name}}"
             }
           ]
@@ -96,7 +96,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\",http_response_status_code=~\"5..\"}[5m])) by (service_name)",
+              "expr": "sum(rate(http_server_duration_milliseconds_count{k8s_namespace_name=\"$namespace\",http_status_code=~\"5..\"}[1m])) by (service_name) or vector(0)",
               "legendFormat": "{{service_name}}"
             }
           ]

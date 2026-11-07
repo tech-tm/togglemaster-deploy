@@ -18,7 +18,7 @@
 | 3 — Install ArgoCD + aplicação principal | ✅ feito |
 | 4 — Observability Deploy + Datadog Secret | ✅ feito |
 | **5 — GitOps + Bloco 3** | ✅ **FEITO + VALIDADO** |
-| 6 — Alertas + OpsGenie + Discord | ❌ pendente |
+| 6 — Alertas + JSM + Slack | ❌ pendente |
 | 7 — Teste end-to-end | ❌ pendente |
 | 8 — Vídeo + Relatório | ❌ pendente |
 
@@ -35,7 +35,7 @@ Isso ajuda a lembrar o que **deveria estar funcionando** no próximo deploy:
 - ✅ **Bloco 1** — Prometheus + Grafana + Loki + dashboard customizado
 - ✅ **Bloco 2** — OTel Collector exportando para Datadog
 - ✅ **Bloco 3** — 5 microsserviços instrumentados + Service Map populado no Datadog APM
-- ❌ **Bloco 4** — Monitor/OpsGenie/Discord/Self-Healing ainda não executado
+- ❌ **Bloco 4** — Monitor/JSM/Slack/Self-Healing ainda não executado
 
 ### Resultados visuais confirmados
 
@@ -84,8 +84,8 @@ mesmo após `terraform destroy` (porque não são `aws_ssm_parameter` do Terrafo
 ### Em contas externas
 
 - **Datadog**: conta ativa, API Key válida, App Key válida (se já criada).
-- **OpsGenie**: ❌ ainda não configurado (Fase 6).
-- **Discord webhook**: ❌ ainda não configurado (Fase 6).
+- **Jira Service Management**: ❌ ainda não configurado (Fase 6).
+- **Slack**: ❌ workspace/canal `#alerts` ainda não integrado ao JSM (Fase 6).
 - **Datadog webhook pro GitHub**: ❌ ainda não configurado (Fase 6).
 
 ---
@@ -117,9 +117,10 @@ Como todas as correções estão versionadas no Git, basta seguir o DEPLOY.md:
 
 Já pode começar a fazer antes de ter cluster:
 
-- [ ] Criar conta OpsGenie + team `togglemaster` + integração Datadog (passo 2 de `docs/alerting.md`)
-- [ ] Criar servidor Discord + webhook do canal `#alerts` + integração no OpsGenie (passo 3)
-- [ ] Criar webhook `togglemaster-self-healing` no Datadog (passo 4)
+- [ ] Criar site Jira Service Management (`<seunome>.atlassian.net`) com template "IT Service Management"
+- [ ] JSM: adicionar integração **Datadog** → copiar API Key → Datadog: instalar integração **Jira Service Management Ops** → colar a key
+- [ ] JSM: adicionar integração **Slack**, autorizar workspace, selecionar canal `#alerts`
+- [ ] Criar webhook `togglemaster-self-healing` no Datadog (passo 5 do `docs/alerting.md`)
 - [ ] Criar Personal Access Token do GitHub (escopo `repo`)
 
 Esses setups **persistem** entre destruições do cluster.
@@ -194,6 +195,6 @@ Guia completo em [TROUBLESHOOTING.md](./TROUBLESHOOTING.md). Os cenários mais p
 
 Quando o Preflight Check passar + a Fase 5 validar + o script de T1/T2/T3 do TESTES.md passar, você está **exatamente no mesmo estado** em que parou. Pode seguir pra:
 
-1. **Fase 6** do DEPLOY.md (Bloco 4) — setup OpsGenie, Discord, webhook Datadog, aplicar monitor.
+1. **Fase 6** do DEPLOY.md (Bloco 4) — setup JSM, Slack, webhook Datadog, aplicar monitor.
 2. **Fase 7** — teste end-to-end com incidente proposital + capturar prints.
 3. **Fase 8** — gravar vídeo + montar relatório PDF.

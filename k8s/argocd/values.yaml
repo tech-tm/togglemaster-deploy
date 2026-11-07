@@ -1,6 +1,10 @@
 # ----------------------------------------------------------------------
 # Helm values para o chart argo-cd (instalacao via argocd-install.yml).
 #
+# Chart compativel: argo-cd 10.11.6 -> ArgoCD app v3.5.6.
+# Esta estrutura de values e estavel entre o chart 7.x (ArgoCD 2.x) e
+# o 10.x (ArgoCD 3.x) — nenhuma reescrita necessaria no upgrade.
+#
 # Alem da configuracao padrao do servidor (LoadBalancer + insecure para o
 # AWS Academy), este arquivo adiciona ignoreDifferences GLOBAIS no
 # ConfigMap argocd-cm, cobrindo campos de .status gerados pelo controlador
@@ -13,6 +17,12 @@
 #
 # Sao campos computados pelo controller — ignorar diferenca neles e
 # seguro: ninguem os coloca manualmente no Git.
+#
+# Nota ArgoCD 3.x: o chart 10.x ja traz por default um 'resource.exclusions'
+# util (EndpointSlice, Endpoints, Lease, etc.) + 'resource.customizations.
+# ignoreResourceUpdates' pra campos frequentemente atualizados pelo
+# controller. Isso reduz carga no API server. Nossos 'ignoreDifferences'
+# complementam esses defaults sem conflito.
 # ----------------------------------------------------------------------
 
 server:

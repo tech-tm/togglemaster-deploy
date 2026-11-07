@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.14.0
+    helm:
+      releaseName: metrics-server
+      values: |
+        # ----------------------------------------------------------------
+        # metrics-server: implementa a API 'metrics.k8s.io' (CPU/memoria
+        # de pods e nodes). E a fonte de dados dos HPAs do projeto
+        # (evaluation-service-hpa e analytics-service-hpa).
+        #
+        # Por que e necessario: o EKS NAO instala o metrics-server por
+        # padrao, e o Prometheus do kube-prometheus-stack nao substitui
+        # essa API. Sem ele, os HPAs ficam com TARGETS '<unknown>' e
+        # condicao ScalingActive=False — o que faz o ArgoCD marcar a
+        # Application 'togglemaster' como Degraded, mesmo com todos os
+        # pods Running.
+        #
+        # Validado manualmente com 'helm install' (chart 3.14.0) antes
+        # de virar Application: os HPAs passaram a ler metricas e a
+        # 'togglemaster' voltou para Healthy.
+        # ----------------------------------------------------------------
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    # kube-system e o namespace padrao do metrics-server: ele registra
+    # a APIService de cluster 'v1beta1.metrics.k8s.io'.
+    namespace: kube-system
+  # Mesma defesa das demais Applications para campos de .status do
+  # k8s 1.33+ que a lib de diff do ArgoCD ainda nao conhece.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /status/terminatingReplicas
+    - group: apps
+      kind: ReplicaSet
+      jsonPointers:
+        - /status/terminatingReplicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - RespectIgnoreDifferences=true

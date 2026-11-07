@@ -12,8 +12,8 @@ veja [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).
 
 - [ ] Conta **AWS Academy** com Learner Lab ativo.
 - [ ] Conta **Datadog** (plano gratuito for education).
-- [ ] Conta **OpsGenie** (plano free, 5 usuários).
-- [ ] Servidor **Discord** com um canal `#alerts`.
+- [ ] Conta **Jira Service Management** (plano free, até 3 agents) com módulo Operations ativo.
+- [ ] Workspace **Slack** com um canal `#alerts`.
 - [ ] AWS CLI, kubectl, helm, jq instalados localmente.
 
 ---
@@ -71,7 +71,7 @@ aleatórias e grava os valores no SSM na primeira execução:
 > `terraform destroy` da camada que os criou. Após um destroy completo,
 > eles reaparecem com valores novos no próximo `Terraform Apply`.
 
-#### Grupo B — Criados manualmente (Datadog)
+#### Grupo B — Criados manualmente (credenciais de SaaS externos)
 
 Esses você cria **uma vez** e eles persistem entre destroy/apply do Terraform
 (porque não são `aws_ssm_parameter` do Terraform — são valores que você gravou
@@ -93,6 +93,90 @@ aws ssm put-parameter --name "/togglemaster/prod/datadog/site" \
   --type String --value "datadoghq.com" --overwrite \
   --profile aws_fiap
 ```
+
+##### PAT do GitHub (para o webhook de self-healing)
+
+🎯 **O que é:** o webhook `togglemaster-self-healing` no Datadog precisa chamar
+a API do GitHub (`repository_dispatch`) pra disparar o workflow
+`self-healing.yml`. Essa chamada é autenticada com um **Personal Access Token
+(PAT)** do GitHub, armazenado no SSM pra o Terraform ler na hora de criar
+o webhook.
+
+📋 **Pré-requisitos:**
+
+- [ ] Conta GitHub com acesso ao repo `tech-tm/togglemaster-deploy`
+- [ ] AWS CLI configurado com perfil `aws_fiap`
+
+🔧 **Passo-a-passo:**
+
+**1) Criar o PAT no GitHub**
+
+Escolha **uma** das duas opções:
+
+- **Classic PAT (mais simples):**
+  GitHub → Settings → Developer settings → **Personal access tokens (classic)** →
+  Generate new token → nome `togglemaster-datadog-webhook` → marcar escopo
+  **`repo`** (completo) → Generate token → copiar o valor (começa com `ghp_`).
+
+- **Fine-grained PAT (mais seguro):**
+  GitHub → Settings → Developer settings → **Fine-grained tokens** →
+  Generate new token → Resource owner: `tech-tm` → Repository access:
+  **Only select repositories** → `togglemaster-deploy` → Permissions →
+  Repository → **Contents: Read and write** → Generate token → copiar
+  (começa com `github_pat_`).
+
+> ⚠️ **Não cole o PAT direto no comando.** Use `read -s` abaixo pra ele
+> não aparecer no histórico do bash nem na tela.
+
+**2) Gravar no SSM**
+
+```bash
+# Vai pedir o PAT; a entrada fica oculta
+read -s GITHUB_PAT
+
+aws ssm put-parameter \
+  --profile aws_fiap \
+  --name /togglemaster/prod/github/webhook-pat \
+  --type SecureString \
+  --value "$GITHUB_PAT" \
+  --description "PAT para webhook Datadog chamar GitHub Actions dispatch (self-healing)" \
+  --overwrite
+
+# Limpa o valor da sessão
+unset GITHUB_PAT
+```
+
+✅ **Verificar que gravou com tamanho esperado:**
+
+```bash
+aws ssm get-parameter \
+  --profile aws_fiap \
+  --name /togglemaster/prod/github/webhook-pat \
+  --with-decryption \
+  --query 'Parameter.Value' --output text | wc -c
+```
+
+Esperado: ~40 caracteres (classic PAT) ou ~90 caracteres (fine-grained PAT).
+
+❓ **Se der erro:**
+
+- `ParameterNotFound` na leitura → o `put-parameter` não gravou. Confira
+  perfil AWS (`--profile aws_fiap`).
+- `AccessDenied` → sessão AWS Academy expirou. Renove as credenciais em
+  `~/.aws/credentials` e tente de novo.
+- `ExpiredTokenException` → mesmo motivo acima.
+
+**Rotação do PAT:**
+
+- **Classic PAT:** válido até você revogar ou até a data de expiração que
+  você escolheu (mínimo 30 dias, máximo 1 ano, "no expiration" é possível
+  mas desaconselhado).
+- **Fine-grained PAT:** máximo 1 ano. Precisa rotacionar antes de expirar.
+
+Quando rotacionar: refaça o passo 2 com o PAT novo (`--overwrite` substitui
+o valor); depois rode `terraform apply` da camada `terraform/` pra o
+Terraform propagar o novo valor pro webhook do Datadog. Nenhum outro
+pipeline precisa mudar.
 
 ### 0.4 Preflight Check (confere se tudo está no lugar)
 
@@ -151,35 +235,108 @@ aws ecr describe-repositories \
 
 ## Fase 2 — Imagens dos microsserviços no ECR
 
-Nessa fase, você faz **build + push** das imagens dos 5 serviços no ECR.
+Nessa fase, você faz **build + push** das imagens dos 5 serviços no ECR
++ atualização automática do `kustomization.yaml` deste repo (`togglemaster-deploy`)
+com a nova tag SHA.
 
 ### 2.1 Disparar os workflows
 
-Opção **A** (recomendado): faz um commit vazio em cada serviço no `togglemaster-app`
-(gatilho natural dos workflows).
+Os 5 workflows (`auth-service`, `flag-service`, `targeting-service`,
+`evaluation-service`, `analytics-service`) suportam 2 formas de disparo:
+
+- **Automático**: push na branch `main` do `togglemaster-app` **que altere**
+  um arquivo em `src/<svc>-service/**`. ⚠️ Commit vazio **não dispara**
+  (o path filter dos workflows ignora commits sem mudança nos paths listados).
+- **Manual** (`workflow_dispatch`): recomendado pro deploy do zero,
+  quando o ECR acabou de ser recriado pelo Terraform e você precisa
+  publicar as 5 imagens sem alterar código.
+
+**Opção A — Via `gh` CLI (recomendado):**
+
+```bash
+# Dispara os 5 workflows em sequencia
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  gh workflow run "$svc.yml" \
+    --repo tech-tm/togglemaster-app \
+    --ref main
+  echo "✓ $svc disparado"
+done
+
+# Acompanha o progresso
+gh run list --repo tech-tm/togglemaster-app --limit 10
+```
+
+**Opção B — Via UI do GitHub:**
+
+Pra cada serviço:
+`togglemaster-app` → **Actions** → selecione o workflow (ex: `Auth Service CI`)
+→ **Run workflow** → branch `main` → **Run workflow**.
+
+Repita pros 5 serviços.
+
+**Opção C — Via commit real no código:**
+
+Se de fato mudou algo em `src/<svc>-service/`, basta push normal:
 
 ```bash
 cd togglemaster-app
-for svc in auth flag targeting evaluation analytics; do
-  git commit --allow-empty -m "chore(deploy): trigger build $svc-service"
-done
+# ... edite algum arquivo em src/auth-service/ ...
+git add src/auth-service/
+git commit -m "chore(auth): algum ajuste"
 git push origin main
 ```
 
-Opção **B**: dispare manualmente cada workflow:
-`togglemaster-app` → Actions → `auth-service` → Run workflow (etc).
-
 ### 2.2 Validar
 
+**Check 1 — Workflows passaram verde:**
+
 ```bash
-# Imagens com SHA do commit em todos os 5 repos
+gh run list --repo tech-tm/togglemaster-app --limit 10
+# Procure por 5 runs recentes com STATUS ✓ (success):
+#   Auth / Flag / Targeting / Evaluation / Analytics Service CI
+```
+
+**Check 2 — Imagens no ECR com SHA correta (teste definitivo):**
+
+```bash
 for svc in auth flag targeting evaluation analytics; do
-  echo "--- $svc ---"
-  aws ecr describe-images \
+  echo "=== togglemaster-$svc ==="
+  aws ecr describe-images --profile aws_fiap \
     --repository-name togglemaster-$svc \
-    --query 'imageDetails[].imageTags' --output text
+    --query 'imageDetails[].{Tag:imageTags[0],Pushed:imagePushedAt}' \
+    --output table 2>&1 | head -8
 done
 ```
+
+Esperado: cada repo mostra pelo menos 1 imagem com `Tag` sendo o SHA
+do commit (40 chars hex, ex: `1c5548d07ba49bc603a807d5fcbdc2abe5d1665b`)
+e `Pushed` recente.
+
+**Check 3 — Commits automáticos chegaram no `togglemaster-deploy`:**
+
+A última etapa do CI atualiza o `kustomization.yaml` deste repo. Verifique:
+
+```bash
+cd togglemaster-deploy
+git fetch origin deploy
+git log origin/deploy --oneline --author="github-actions" -10
+```
+
+Esperado: 5 commits recentes `chore: update <svc> to <SHA>`.
+
+### 2.3 Problemas comuns
+
+- **Workflow falha no Trivy scan** (`exit-code: 1` com CVE CRITICAL):
+  uma dependência tem vulnerabilidade crítica nova. Opções:
+  (a) atualizar a dependência, (b) adicionar `--ignorefile` com o CVE,
+  (c) ajustar `severity` no workflow pra `HIGH,CRITICAL` com ignore.
+- **Workflow falha no `Push changes` do gitops update**:
+  o `PERSONAL_ACCESS_TOKEN` nos GitHub Secrets do `togglemaster-app`
+  expirou ou perdeu permissão `Contents: write` no `togglemaster-deploy`.
+- **`gh workflow run` retorna `workflow does not have workflow_dispatch trigger`**:
+  os workflows ainda estão numa branch sem o `workflow_dispatch` configurado.
+  Confirme que a branch `main` tem o trigger (adicionado nas correções
+  recentes).
 
 ---
 
@@ -190,7 +347,7 @@ done
 **`togglemaster-deploy`** → Actions → **Install ArgoCD** → Run workflow → branch `deploy`
 
 Isso faz:
-- Helm `argo-cd` v7.8.0 no namespace `argocd` (modo LoadBalancer + insecure, com `ignoreDifferences` globais pra evitar `ComparisonError`).
+- Helm `argo-cd` v10.11.6 no namespace `argocd` → **ArgoCD app v3.5.6** (modo LoadBalancer + insecure, com `ignoreDifferences` globais pra evitar `ComparisonError`).
 - Aplica `k8s/application.yaml` — Application do ArgoCD que gerencia os 5 microsserviços.
 
 Duração: ~5 min.
@@ -254,7 +411,15 @@ Na UI do ArgoCD você vê as Applications sincronizando (`togglemaster` nessa fa
 **`togglemaster-deploy`** → Actions → **Observability Deploy** → Run workflow → branch `deploy`
 
 Esse workflow aplica o App-of-Apps da observabilidade e aguarda cada Application
-sincronizar. **18 steps granulares** — se algo falhar, você vê exatamente em qual.
+sincronizar (`kube-prometheus-stack`, `loki-stack`, `grafana-config`,
+`metrics-server`, `otel-collector`). Steps granulares — se algo falhar, você vê
+exatamente em qual.
+
+> **metrics-server:** o EKS não instala o metrics-server por padrão. Ele é
+> necessário pros HPAs do `evaluation-service` e do `analytics-service`. Sem
+> ele, os HPAs ficam com `TARGETS <unknown>` e a Application `togglemaster`
+> aparece como **Degraded** no ArgoCD, mesmo com todos os pods Running.
+> Ele sobe pelo chart `metrics-server` 3.14.0 no namespace `kube-system`.
 
 Duração: ~10 min (os Helm charts de Prometheus/Loki demoram).
 
@@ -274,6 +439,10 @@ kubectl get applications -n argocd \
 
 # Pods de pé no namespace observability
 kubectl get pods -n observability
+
+# metrics-server: APIService disponível (AVAILABLE=True) e métricas reais
+kubectl get apiservice v1beta1.metrics.k8s.io
+kubectl top nodes
 
 # Grafana (abre no browser)
 kubectl port-forward -n observability svc/kube-prometheus-stack-grafana 3000:80
@@ -349,55 +518,104 @@ Depois disso, abra o **Datadog APM → Services**: os 5 serviços devem aparecer
 
 ## Fase 6 — Alertas, Incident Management, ChatOps (Bloco 4)
 
-Duas opções de incident management + ChatOps. Escolha **uma**:
-
-| Opção | Incident Management | ChatOps |
-|---|---|---|
-| **A (recomendada)** | Jira Service Management Operations (JSM Ops) | Slack |
-| **B (legacy, até abril/2027)** | OpsGenie | Discord |
+Stack: **Jira Service Management Operations (JSM Ops)** para incident
+management + **Slack** para ChatOps.
 
 Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`](./docs/alerting.md).
 
 ### 6.1 Setup manual (uma vez, fora do GitHub)
 
-**Comum às duas opções:**
-
-- [ ] **Datadog**: criar webhook `togglemaster-self-healing` apontando pro
-  `repository_dispatch` do GitHub Actions (ver `docs/alerting.md` passo 5).
-
-**Opção A — JSM + Slack** (ver `docs/alerting.md` opção A):
+Essas são integrações entre contas SaaS externas — não dá pra automatizar
+no projeto. Faça uma vez; persistem entre destroys do cluster.
 
 - [ ] Criar site JSM (`<seunome>.atlassian.net`) com template "IT Service Management".
 - [ ] JSM: adicionar integração **Datadog** → copiar API Key.
 - [ ] Datadog: instalar integração **Jira Service Management Ops** → colar a API Key.
 - [ ] JSM: adicionar integração **Slack**, autorizar o workspace, selecionar o canal `#alerts`.
+- [ ] **PAT do GitHub cadastrado no SSM** (ver seção **0.3 → PAT do GitHub (para o webhook de self-healing)** acima — único pré-requisito pro Terraform da fase 6).
 
-**Opção B — OpsGenie + Discord** (ver `docs/alerting.md` opção B — apenas se já tem conta OpsGenie):
+> 💡 **Mudou do roteiro antigo:** o webhook `togglemaster-self-healing` no
+> Datadog **não** é mais criado manualmente no painel. Agora é gerenciado
+> por Terraform (seção 6.2 abaixo). O que fica manual é só a conexão
+> entre contas SaaS (JSM ↔ Datadog ↔ Slack).
 
-- [ ] OpsGenie: criar team `togglemaster` + integração Datadog.
-- [ ] Discord: criar webhook do canal `#alerts` + integrar no OpsGenie.
+### 6.2 Aplicar o Monitor + Webhook via Terraform
 
-### 6.2 Aplicar o Monitor
+🎯 **Objetivo:** criar os 5 monitores de 5xx (um por microsserviço) e o
+webhook de self-healing no Datadog, 100% versionados em código
+(`terraform/` dentro deste repo).
 
-**`togglemaster-deploy`** → Actions → **Alerts Deploy** → Run workflow
+📋 **Pré-requisitos:**
+- [x] Fase 4 concluída (observabilidade rodando, OTel Collector exportando)
+- [x] Fase 5 concluída (microsserviços de pé, carga gerada → métricas APM
+      chegando no Datadog)
+- [x] API Key + App Key Datadog no SSM (seção 0.3, Grupo B)
+- [x] PAT GitHub no SSM (seção 0.3)
 
-Inputs:
+> ⚠️ **Importante:** rode a Fase 6 **somente depois** das Fases 4 e 5.
+> Caso contrário os monitores nascem em `No Data` perpétuo — a métrica
+> `trace.http.request.hits{service:<serviço>}` só existe depois que o
+> OTel Collector começa a enviar APM Stats pro Datadog.
 
-| Input | Opção A (JSM) | Opção B (OpsGenie legacy) |
-|---|---|---|
-| `incident_handle` | `jsm_ops` (default) | `opsgenie-togglemaster` |
-| `threshold_percent` | `5` | `5` |
-| `warning_percent` | `3` | `3` |
+🔧 **Passo-a-passo:**
 
-Esse workflow lê o payload JSON versionado em `alerts/datadog/monitor-5xx-auth.json`,
-substitui o placeholder `${INCIDENT_HANDLE}` e cria/atualiza o Monitor no Datadog via API.
+**1) Rodar em modo `plan` primeiro (dry-run — não altera nada):**
+
+`togglemaster-deploy` → Actions → **Datadog Terraform — Apply** → Run workflow
+
+| Input | Valor |
+|---|---|
+| `action` | `plan` |
+| `threshold_percent` | `5` |
+| `warning_percent` | `3` |
+
+O workflow baixa o Terraform, inicializa o backend S3, roda `terraform plan`
+e salva o resultado como artifact `tfplan-<run_id>`.
+
+**2) Revisar o plan:**
+
+- Baixe o artifact `tfplan-<run_id>` da UI do GitHub Actions
+- Confira que vai criar/atualizar 6 recursos:
+  - `datadog_monitor.services_5xx["auth-service"]` (e os outros 4 serviços)
+  - `datadog_webhook.self_healing`
+
+**3) Aplicar:**
+
+Mesma Action → Run workflow com `action = apply` → Aguarde a conclusão.
+
+O workflow:
+1. Lê API Key, App Key e PAT GitHub do SSM Parameter Store.
+2. Autentica no Datadog e no GitHub.
+3. Cria/atualiza os 5 monitores (query de 5xx > 5% por serviço).
+4. Cria/atualiza o webhook (payload com `$TAGS[service]`, headers com PAT GitHub).
+5. Mostra os Monitor IDs + URLs no Summary do workflow.
+
+> ⚠️ **Primeira aplicação em ambiente que já tinha monitor manual:**
+> se o monitor ou webhook já existir no painel (criado por você manualmente
+> ou pelo workflow legado `alerts-deploy.yml`), o apply vai falhar com
+> `Resource already exists`. Nesse caso, siga o troubleshooting em
+> [`terraform/README.md`](./terraform/README.md) → **"Resource already
+> exists durante o apply"**.
 
 ### 6.3 Validar
 
-- Datadog UI → **Monitors** → o monitor `[ToggleMaster] auth-service - taxa de erros 5xx > 5%` deve aparecer com status `OK` ou `No Data`.
-- Teste manual: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que:
-  - **Opção A**: alerta aparece no JSM (**Operations** → **Alerts**) e notificação chega no Slack `#alerts`.
-  - **Opção B**: incident aparece no OpsGenie e notificação chega no Discord `#alerts`.
+- Datadog UI → **Monitors** → os 5 monitores `[ToggleMaster] <serviço> - taxa de erros 5xx > 5%` com status `OK` ou `No Data`.
+- Datadog UI → **Integrations** → **Webhooks** → `togglemaster-self-healing` presente.
+- Teste manual do fluxo completo: Datadog Monitor UI → **Resolve** → **Trigger** → confirmar que:
+  1. O alerta aparece no JSM (**Operations** → **Alerts**).
+  2. A notificação chega no Slack `#alerts`.
+  3. O workflow **Self-Healing Rollout** é disparado em `togglemaster-deploy` → Actions.
+
+### 6.4 Remover (opcional)
+
+Pra destruir monitor + webhook sem afetar o restante da infra:
+
+`togglemaster-deploy` → Actions → **Datadog Terraform — Destroy** → Run
+workflow com `confirm_destroy = destroy-datadog`.
+
+As credenciais no SSM, integrações JSM/Slack e o cluster EKS **não** são
+tocados. Veja [`terraform/README.md`](./terraform/README.md) → **Rollback**
+pra opções mais granulares (reverter só monitor, só webhook, etc.).
 
 ---
 
@@ -417,7 +635,7 @@ Faça algumas chamadas de evaluate — **note que o Ingress exige o prefixo `/ev
 
 ```bash
 # Health dos 5 serviços (rotas do Ingress têm prefixo por serviço)
-for route in validate flag targeting evaluation analytics; do
+for route in auth flag targeting evaluation analytics; do
   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$INGRESS/$route/health")
   echo "$route/health → HTTP $code"
 done
@@ -432,7 +650,7 @@ Observe no Datadog APM → **Service Map**: os 5 serviços devem aparecer
 conectados por setas (`evaluation` → `auth`, `flag`, `targeting`).
 
 > **Mapa de rotas do Ingress** (prefixo é rewriten pelo nginx):
-> - `/validate/<path>` → `auth-service` recebe `/<path>`
+> - `/auth/<path>` → `auth-service` recebe `/<path>` (ex: `/auth/validate` → `/validate`)
 > - `/flag/<path>` → `flag-service`
 > - `/targeting/<path>` → `targeting-service`
 > - `/evaluation/<path>` → `evaluation-service`
@@ -458,8 +676,8 @@ wait
 Dentro de **~5 min**, observe:
 
 1. **Datadog Monitor** entra em `Alert` (status vermelho).
-2. **OpsGenie** abre um incidente (visível no dashboard do OpsGenie).
-3. **Discord** canal `#alerts` recebe notificação (via integração OpsGenie).
+2. **JSM Operations** abre um alerta (visível em **Operations** → **Alerts** do JSM).
+3. **Slack** canal `#alerts` recebe notificação (via integração JSM).
 4. **GitHub Actions** → `togglemaster-deploy` → workflow **Self-Healing Rollout** roda.
 5. O workflow executa `kubectl rollout restart deployment/auth-service`.
 
@@ -470,7 +688,7 @@ Capture durante o passo 7.2:
 - [ ] Dashboard do Grafana aberto, dados fluindo.
 - [ ] Datadog APM → Service Map com os 5 serviços.
 - [ ] Datadog APM → Trace distribuído de uma chamada `/evaluate`.
-- [ ] Discord `#alerts` com a notificação do incidente.
+- [ ] Slack `#alerts` com a notificação do incidente (vinda do JSM).
 - [ ] GitHub Actions → run do **Self-Healing Rollout** → log do `kubectl rollout restart`.
 
 ### 7.4 Restaurar
@@ -501,8 +719,8 @@ graph TD
     E --> F[4.1 Observability Deploy]
     F --> G[4.2 Sync Datadog Secret]
     G --> H[5. GitOps push]
-    H --> I[6.1 Setup OpsGenie/Discord manual]
-    I --> J[6.2 Alerts Deploy]
+    H --> I[6.1 Setup JSM/Slack manual + PAT GitHub no SSM]
+    I --> J[6.2 Datadog Terraform — Apply]
     J --> K[7. Teste end-to-end + prints]
     K --> L[8. Vídeo + Relatório]
 ```
@@ -598,9 +816,9 @@ Todos esses são aplicados pelos workflows na nova rodada:
 
 - Infra Terraform (EKS, RDS, Redis, SQS, DynamoDB, ECR) — `Terraform Apply`.
 - ArgoCD + `ignoreDifferences` globais — `Install ArgoCD` aplica o `k8s/argocd/values.yaml`.
-- Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector) com todos os fixes — `Observability Deploy`.
+- Stack de observabilidade (Prometheus, Grafana, Loki, OTel Collector, metrics-server) com todos os fixes — `Observability Deploy`.
 - Microsserviços com instrumentação OTel e credenciais AWS nos deployments — `GitOps` + ArgoCD.
-- Monitor do Datadog — `Alerts Deploy`.
+- Monitor do Datadog + webhook de self-healing — `Datadog Terraform — Apply` (camada `terraform/`).
 - Workflow de self-healing — já versionado.
 
 ### NÃO persiste no cluster (vem de fora do Git) ⚠️
@@ -611,7 +829,7 @@ Essas 3 fontes de dado ficam **fora** do cluster e são materializadas pelos wor
 |---|---|---|
 | **AWS SSM Parameter Store** | `cluster-name`, credenciais DB/Redis, Datadog api-key/app-key | **Persiste** entre sessões no AWS Academy. Só perde se alguém apagar manualmente ou se o Learner Lab for totalmente resetado. |
 | **GitHub Secrets** | Credenciais AWS da sessão | **A cada 4h** (expiração da sessão AWS Academy) |
-| **OpsGenie + Discord + Datadog webhook** | Config externa das contas SaaS | **1 vez** por conta (não expira) |
+| **JSM + Slack + Datadog webhook** | Config externa das contas SaaS | **1 vez** por conta (não expira) |
 
 ### Patches manuais que fizemos no cluster — resumo
 

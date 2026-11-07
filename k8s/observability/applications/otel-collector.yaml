@@ -96,13 +96,33 @@ spec:
 
         # ----------------------------------------------------------------
         # ServiceMonitor: o Prometheus (kube-prometheus-stack) descobre
-        # automaticamente e faz scrape de /metrics do exporter prometheus
-        # (porta 8889) e das metricas internas do collector (porta 8888).
+        # automaticamente e faz scrape das metricas do collector.
+        #
+        # IMPORTANTE sobre as portas:
+        #   - 'metrics' (8888): metricas INTERNAS do proprio collector
+        #     (otelcol_*). Esta DESATIVADA no v0.123+ (service.telemetry.
+        #     metrics.address foi removida). Deixar o default scrape aqui
+        #     causa 'connection refused' no Prometheus.
+        #   - 'prometheus' (8889): exporter 'prometheus' que converte as
+        #     metricas OTLP recebidas (http.server.request.duration, etc.)
+        #     em formato Prometheus. E AQUI que as metricas das apps saem.
+        #
+        # Por default o chart cria ServiceMonitor so pra porta 'metrics'
+        # (8888, vazia). 'extraPortsScrapeMonitors' adiciona scrape para
+        # a porta 'prometheus' (8889, onde estao as metricas reais).
         # ----------------------------------------------------------------
         serviceMonitor:
           enabled: true
           extraLabels:
             release: kube-prometheus-stack
+          # Scrape adicional da porta 'prometheus' (8889) onde o exporter
+          # 'prometheus' expoe as metricas das apps convertidas de OTLP.
+          # Sem isso, o dashboard de 'Requisicoes HTTP por servico' do
+          # Grafana fica vazio mesmo com os servicos emitindo metricas.
+          extraPortsScrapeMonitors:
+            - port: prometheus
+              path: /metrics
+              interval: 30s
 
         # ----------------------------------------------------------------
         # Configuracao do pipeline OTel.
@@ -135,6 +155,40 @@ spec:
                 - key: k8s.cluster.name
                   value: togglemaster-eks
                   action: upsert
+                # Marca todos os spans/metricas/logs com o time dono do servico.
+                # No Datadog isso vira a tag `team:togglemaster`, visivel no
+                # Service Catalog, Service Map e usada em filtros/views.
+                - key: team
+                  value: togglemaster
+                  action: upsert
+
+            # ----------------------------------------------------------------
+            # Preenche o atributo `peer.service` nos spans client-side.
+            #
+            # Por que: o Service Map do Datadog monta a seta
+            #   caller -> callee  usando a tag `peer.service` do span client.
+            # Sem ela, mesmo com datadog/connector + peer_tags_aggregation,
+            # o Map pode nao conseguir inferir a dependencia a partir apenas
+            # de `net.peer.name` / `server.address`.
+            #
+            # Como: copiamos de atributos ja presentes (ordem de prioridade):
+            #   1. http.host           -> usado pelo otelhttp (Go) e requests (Py)
+            #   2. net.peer.name       -> idem, convencao antiga
+            #   3. server.address      -> convencao nova (semconv 1.21+)
+            # O `insert` so cria se ainda nao existir, entao se o SDK ja
+            # setou peer.service explicitamente, respeitamos o valor dele.
+            # ----------------------------------------------------------------
+            attributes/peer_service:
+              actions:
+                - key: peer.service
+                  from_attribute: http.host
+                  action: insert
+                - key: peer.service
+                  from_attribute: net.peer.name
+                  action: insert
+                - key: peer.service
+                  from_attribute: server.address
+                  action: insert
 
           exporters:
             # Envia traces, metricas e logs para o Datadog (APM do Bloco 3).
@@ -153,6 +207,32 @@ spec:
             debug:
               verbosity: basic
 
+          # ----------------------------------------------------------------
+          # Connectors: componentes que atuam como "exporter" em uma pipeline
+          # e "receiver" em outra. Essenciais para o Datadog APM funcionar
+          # 100% com OTel Collector (sem Datadog Agent).
+          #
+          # Sem o datadog/connector, o exporter envia apenas spans brutos ao
+          # Datadog. Faltam entao as "APM Stats" (contadores agregados por
+          # service+operation) que alimentam:
+          #   - Service Map (setas entre servicos)
+          #   - Metricas trace.http.request.hits / .errors / .duration
+          #   - Monitores tradicionais de APM (ex: 5xx > 5%)
+          # ----------------------------------------------------------------
+          connectors:
+            datadog/connector:
+              traces:
+                # Computa hits/errors/duration agregados por span kind
+                # (server, client, producer, consumer, internal).
+                compute_stats_by_span_kind: true
+                # Agrega por tags de "peer" (ex: peer.service, net.peer.name)
+                # para que o Datadog monte o grafo de dependencias do
+                # Service Map a partir dos spans client-side.
+                peer_tags_aggregation: true
+                # Marca como top-level os spans conforme o span kind,
+                # alinhado com o modelo APM do Datadog.
+                compute_top_level_by_span_kind: true
+
           service:
             # NOTA: a chave service.telemetry.metrics.address foi removida
             # no OpenTelemetry Collector >= v0.123 (migracao para o padrao
@@ -169,12 +249,25 @@ spec:
             #                 port: 8888
             # Hoje nao precisamos delas (nao sao requisito da Fase 4).
             pipelines:
+              # Spans vao em dois destinos:
+              #   - datadog exporter  -> envia os spans crus (Trace Explorer)
+              #   - datadog/connector -> computa APM Stats a partir dos spans
+              #                          e as emite como metricas no pipeline
+              #                          abaixo (Service Map + trace.* metrics)
               traces:
                 receivers: [otlp]
-                processors: [memory_limiter, k8sattributes, resource, batch]
-                exporters: [datadog]
+                # Ordem: memory_limiter (seguranca) -> k8sattributes (tags k8s)
+                # -> resource (env/team/cluster) -> attributes/peer_service
+                # (preenche peer.service nos spans client antes de ir pro
+                # connector, pra ele conseguir agregar o grafo do Service Map)
+                # -> batch (lote final).
+                processors: [memory_limiter, k8sattributes, resource, attributes/peer_service, batch]
+                exporters: [datadog, datadog/connector]
+              # O connector atua aqui como "receiver" adicional, injetando
+              # as APM Stats no fluxo de metricas. O exporter datadog recebe
+              # entao: metricas OTLP das apps + APM Stats do connector.
               metrics:
-                receivers: [otlp]
+                receivers: [otlp, datadog/connector]
                 processors: [memory_limiter, k8sattributes, resource, batch]
                 exporters: [datadog, prometheus]
               logs:

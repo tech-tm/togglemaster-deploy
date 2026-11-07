@@ -4,3 +4,4 @@ namespace: observability
 resources:
   - datasource-loki.yaml
   - dashboard-togglemaster.yaml
+  - otel-collector-servicemonitor.yaml

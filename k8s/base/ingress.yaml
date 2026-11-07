@@ -11,7 +11,12 @@ spec:
   rules:
   - http:
       paths:
-      - path: /validate(/|$)(.*)
+      # Prefixo /auth segue a convencao de 'prefixo = nome do servico'
+      # usada pelos outros 4 paths. Chamadas:
+      #   /auth/health          -> auth-service /health
+      #   /auth/validate        -> auth-service /validate
+      #   /auth/admin/keys      -> auth-service /admin/keys
+      - path: /auth(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
           service:

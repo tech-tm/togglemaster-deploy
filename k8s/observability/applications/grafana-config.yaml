@@ -22,3 +22,9 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # A pasta grafana/ inclui um ServiceMonitor (CRD instalado pelo
+      # kube-prometheus-stack). Como esta Application sobe em paralelo
+      # com o kube-prometheus-stack, o CRD pode ainda nao existir no
+      # primeiro sync. Esta opcao pula o dry-run para recursos cujo CRD
+      # ainda nao existe; o selfHeal reaplica quando ele aparecer.
+      - SkipDryRunOnMissingResource=true
