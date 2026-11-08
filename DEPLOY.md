@@ -223,11 +223,11 @@ Duração típica: **15 a 25 minutos**.
 
 ```bash
 # Cluster EKS criado?
-aws eks describe-cluster --name togglemaster-eks \
+aws eks describe-cluster --name togglemaster-eks --profile aws_fiap \
   --query 'cluster.{Name:name,Status:status,Version:version}'
 
 # ECR com os 5 repos?
-aws ecr describe-repositories \
+aws ecr describe-repositories --profile aws_fiap \
   --query 'repositories[].repositoryName' --output table
 ```
 
@@ -357,7 +357,7 @@ Duração: ~5 min.
 **Conectar o `kubectl` ao cluster** (uma vez por sessão AWS Academy; sem isso os comandos `kubectl` falham):
 
 ```bash
-aws eks update-kubeconfig --region us-east-1 --name togglemaster-eks
+aws eks update-kubeconfig --region us-east-1 --name togglemaster-eks --profile aws_fiap
 
 # Testa que a conexao funciona
 kubectl get nodes
