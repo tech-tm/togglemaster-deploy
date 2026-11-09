@@ -104,7 +104,7 @@ mesmo após `terraform destroy` (porque não são `aws_ssm_parameter` do Terrafo
 
 Como todas as correções estão versionadas no Git, basta seguir o DEPLOY.md:
 
-1. **Fase 0** — [Preflight Check](DEPLOY.md#04-preflight-check-confere-se-tudo-está-no-lugar) workflow deve passar.
+1. **Fase 0** — [Preflight Check](docs/DEPLOY.md#04-preflight-check-confere-se-tudo-está-no-lugar) workflow deve passar.
 2. **Fase 1** — Terraform Apply. **Duração: ~15-25 min**.
 3. **Fase 2** — Build imagens. 5 pushes vazios dispara workflows. **Duração: ~5-10 min**.
 4. **Fase 3** — Install ArgoCD. Agora com `ignoreDifferences` globais já aplicados pelo values.yaml. **Duração: ~5 min**.
@@ -187,7 +187,7 @@ Entre o último "ambiente de pé" e agora, consolidamos no Git:
 
 ### 3. Diagnóstico se algo quebrar
 
-Guia completo em [TROUBLESHOOTING.md](./TROUBLESHOOTING.md). Os cenários mais prováveis estão nos itens 1, 2, 3, 8, 14, 15 e 17.
+Guia completo em [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md). Os cenários mais prováveis estão nos itens 1, 2, 3, 8, 14, 15 e 17.
 
 ---
 

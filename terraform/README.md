@@ -28,7 +28,7 @@ Sem o passo 5, os monitores nascem em `No Data` — a métrica
 `datadog connector` do OTel Collector começa a receber spans e agregar
 APM Stats.
 
-Detalhes dessa ordem em [`DEPLOY.md`](../DEPLOY.md) → Fase 6.
+Detalhes dessa ordem em [`docs/DEPLOY.md`](../docs/DEPLOY.md) → Fase 6.
 
 ## 🔐 Como os segredos são tratados
 
@@ -221,7 +221,7 @@ drift real. Se o `apply` for bem-sucedido, pode ignorar.
 
 ### Mais troubleshoot
 
-[`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md) → **seção 20: Datadog
+[`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md) → **seção 20: Datadog
 Terraform**.
 
 ## 📂 Arquivos

@@ -521,7 +521,7 @@ Depois disso, abra o **Datadog APM → Services**: os 5 serviços devem aparecer
 Stack: **Jira Service Management Operations (JSM Ops)** para incident
 management + **Slack** para ChatOps.
 
-Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`](./docs/alerting.md).
+Documentação completa com screenshots e troubleshooting em [`docs/alerting.md`](./alerting.md).
 
 ### 6.1 Setup manual (uma vez, fora do GitHub)
 
@@ -594,7 +594,7 @@ O workflow:
 > se o monitor ou webhook já existir no painel (criado por você manualmente
 > ou pelo workflow legado `alerts-deploy.yml`), o apply vai falhar com
 > `Resource already exists`. Nesse caso, siga o troubleshooting em
-> [`terraform/README.md`](./terraform/README.md) → **"Resource already
+> [`terraform/README.md`](../terraform/README.md) → **"Resource already
 > exists durante o apply"**.
 
 ### 6.3 Validar
@@ -614,7 +614,7 @@ Pra destruir monitor + webhook sem afetar o restante da infra:
 workflow com `confirm_destroy = destroy-datadog`.
 
 As credenciais no SSM, integrações JSM/Slack e o cluster EKS **não** são
-tocados. Veja [`terraform/README.md`](./terraform/README.md) → **Rollback**
+tocados. Veja [`terraform/README.md`](../terraform/README.md) → **Rollback**
 pra opções mais granulares (reverter só monitor, só webhook, etc.).
 
 ---
@@ -725,7 +725,7 @@ Confira: `kubectl get pods -n togglemaster -l app=auth` deve mostrar `1/1 Runnin
 
 - [ ] Gravar vídeo de **até 25 min** cobrindo as 4 seções do PDF.
 - [ ] Montar relatório PDF com os prints acima + justificativa técnica
-  (texto pronto em [`docs/alerting.md`](./docs/alerting.md) → seção "Justificativa das escolhas").
+  (texto pronto em [`docs/alerting.md`](./alerting.md) → seção "Justificativa das escolhas").
 - [ ] Submeter.
 
 ---
