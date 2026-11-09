@@ -658,13 +658,24 @@ conectados por setas (`evaluation` → `auth`, `flag`, `targeting`).
 
 ### 7.2 Causar incidente proposital
 
-Derruba o `auth-service` pra forçar erros no evaluation:
+> ⚠️ O ArgoCD está com `selfHeal: true` e devolve o pod do `auth-service` em
+> segundos. Por isso o teste tem 3 etapas: **pausar o `selfHeal`** (abaixo),
+> **testar** e **restaurar** (passo 7.4).
+
+**1) Pausar o `selfHeal` do ArgoCD:**
+
+```bash
+kubectl -n argocd patch application togglemaster --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}'
+```
+
+**2) Derrubar o `auth-service` pra forçar erros no evaluation:**
 
 ```bash
 kubectl scale deployment auth-service -n togglemaster --replicas=0
 ```
 
-Dispare carga:
+**3) Dispare carga:**
 
 ```bash
 for i in {1..500}; do
@@ -681,6 +692,9 @@ Dentro de **~5 min**, observe:
 4. **GitHub Actions** → `togglemaster-deploy` → workflow **Self-Healing Rollout** roda.
 5. O workflow executa `kubectl rollout restart deployment/auth-service`.
 
+> Com `replicas=0` o `rollout restart` roda, mas não cria pod. O `auth-service`
+> só volta no passo **7.4**.
+
 ### 7.3 Prints obrigatórios (relatório PDF)
 
 Capture durante o passo 7.2:
@@ -693,9 +707,17 @@ Capture durante o passo 7.2:
 
 ### 7.4 Restaurar
 
+Devolve o `auth-service` e **reativa o `selfHeal`** (não esqueça, senão o ArgoCD
+deixa de se autocorrigir):
+
 ```bash
 kubectl scale deployment auth-service -n togglemaster --replicas=1
+
+kubectl -n argocd patch application togglemaster --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":true}}}}'
 ```
+
+Confira: `kubectl get pods -n togglemaster -l app=auth` deve mostrar `1/1 Running`.
 
 ---
 
