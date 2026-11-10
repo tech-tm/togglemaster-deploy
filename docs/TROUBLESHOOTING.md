@@ -31,6 +31,8 @@ Se o erro que você está vendo **não** está aqui, abra uma issue ou colete:
 - [17. `InvalidSignatureException` ao chamar AWS no workflow](#17-invalidsignatureexception-ao-chamar-aws-no-workflow)
 - [18. Application `togglemaster` fica `OutOfSync` em `/spec/replicas`](#18-application-togglemaster-fica-outofsync-em-specreplicas)
 - [19. Terraform: `ResourceNotFoundException` ao fazer apply](#19-terraform-resourcenotfoundexception-ao-fazer-apply)
+- [20. Datadog Terraform: `Resource already exists` ou `401 Unauthorized`](#20-datadog-terraform-resource-already-exists-ou-401-unauthorized)
+- [21. Application `togglemaster` Degraded com todos os pods Running (HPA sem metrics-server)](#21-application-togglemaster-degraded-com-todos-os-pods-running-hpa-sem-metrics-server)
 
 ---
 
@@ -156,9 +158,9 @@ kubectl delete jobs -n argocd \
 # Repete o helm com timeout maior
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
-  --version 7.8.0 \
+  --version 10.11.6 \
   -f k8s/argocd/values.yaml \
-  --timeout 15m \
+  --timeout 20m \
   --wait
 ```
 
@@ -466,31 +468,36 @@ viraram abóbora.
 
 ### Sintoma
 
-Workflow `Alerts Deploy` falha com:
+Workflow `Datadog Terraform — Apply` falha com:
 
 ```text
-HTTP 403
+Error: 403 Forbidden
 {"errors": ["Forbidden"]}
 ```
 
 ### Causa
 
-Falta a **Application Key** (não é a API Key). API Key autoriza ingestão de
+Falta a **Application Key** (não a API Key). API Key autoriza ingestão de
 dados; App Key autoriza chamadas de **gerenciamento** da API (criar monitors,
 dashboards, etc.).
 
+> Erro parecido pode acontecer se a App Key foi substituída por um
+> **Personal Access Token** (prefixo `ddpat_`) por engano — ver também
+> seção **20** deste guia.
+
 ### Solução
 
-1. Datadog UI → avatar canto superior direito → **Organization Settings** →
+1. Datadog UI → avatar canto superior direito → **Personal Settings** →
    **Application Keys** → **New Key**.
-2. Nome: `togglemaster-ci`.
-3. Copie o valor.
+2. Nome: `togglemaster-terraform`.
+3. Copie o valor (começa com `ddapp_` ou tem 40 chars hex).
 4. Grave no SSM:
    ```bash
-   aws ssm put-parameter --name "/togglemaster/prod/datadog/app-key" \
+   aws ssm put-parameter --profile aws_fiap \
+     --name "/togglemaster/prod/datadog/app-key" \
      --type SecureString --value "<DD_APP_KEY>" --overwrite
    ```
-5. Rode `Alerts Deploy` de novo.
+5. Rode `Datadog Terraform — Apply` de novo.
 
 ---
 
@@ -498,7 +505,7 @@ dashboards, etc.).
 
 ### Sintoma
 
-Monitor do Datadog entra em `Alert`, OpsGenie abre incidente, Discord notifica —
+Monitor do Datadog entra em `Alert`, JSM abre alerta, Slack notifica —
 mas o workflow `Self-Healing Rollout` **não roda**.
 
 ### Causa
@@ -817,7 +824,7 @@ Chamadas sem prefixo retornam 404 do nginx default backend.
 
 | URL externa | Vai pro serviço | Vira no backend |
 |---|---|---|
-| `/validate/<path>` | auth-service | `/<path>` |
+| `/auth/<path>` | auth-service | `/<path>` (ex: `/auth/validate` → `/validate`) |
 | `/flag/<path>` | flag-service | `/<path>` |
 | `/targeting/<path>` | targeting-service | `/<path>` |
 | `/evaluation/<path>` | evaluation-service | `/<path>` |
@@ -827,7 +834,7 @@ Chamadas sem prefixo retornam 404 do nginx default backend.
 
 ```bash
 # health dos 5 serviços
-for route in validate flag targeting evaluation analytics; do
+for route in auth flag targeting evaluation analytics; do
   curl -s -o /dev/null -w "%s/health → %{http_code}\n" "$route" "http://$INGRESS/$route/health"
 done
 
@@ -1080,6 +1087,201 @@ As ferramentas que **corrigem** o conteúdo do state são:
 - `terraform refresh` / `terraform plan -refresh-only` — sincroniza state com AWS.
 - `terraform state rm` — remove do state recursos fantasma.
 - `terraform import` — adiciona ao state recursos que existem na AWS mas foram criados fora do Terraform.
+
+---
+
+## 20. Datadog Terraform: `Resource already exists` ou `401 Unauthorized`
+
+### Sintoma A — `Resource already exists`
+
+Workflow **Datadog Terraform — Apply** falha ao criar o monitor ou webhook:
+
+```text
+Error: error creating monitor: 400 Bad Request:
+{"errors":["A monitor with the same name already exists"]}
+```
+
+Ou similar pro webhook:
+
+```text
+Error: error creating webhook: 400 Bad Request:
+{"errors":["webhook with name togglemaster-self-healing already exists"]}
+```
+
+### Causa (Sintoma A)
+
+O recurso já existe no painel Datadog — criado manualmente ou pelo
+workflow legado `alerts-deploy.yml`. O Terraform não sabe que ele existe
+(state vazio) e tenta criar outro com mesmo nome.
+
+### Solução (Sintoma A) — Importar o recurso existente
+
+Rodar localmente (não via workflow, pois `terraform import` precisa ser interativo):
+
+```bash
+cd togglemaster-deploy/terraform
+
+DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/api-key --with-decryption \
+  --query 'Parameter.Value' --output text)
+DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key --with-decryption \
+  --query 'Parameter.Value' --output text)
+
+# 1+2. Importar cada monitor (ha um por servico) pelo nome
+for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+  ENC=$(printf '[ToggleMaster] %s' "$svc" | jq -sRr @uri)
+  MID=$(curl -sS "https://api.datadoghq.com/api/v1/monitor?name=$ENC" \
+    -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
+    | jq -r '.[0].id // empty')
+  [ -n "$MID" ] && AWS_PROFILE=aws_fiap terraform import \
+    "datadog_monitor.services_5xx[\"$svc\"]" "$MID"
+done
+
+# 3. Importar webhook (pelo nome)
+AWS_PROFILE=aws_fiap terraform import datadog_webhook.self_healing togglemaster-self-healing
+
+# 4. Confirmar
+AWS_PROFILE=aws_fiap terraform state list
+
+# 5. Plan — deve mostrar poucas ou nenhuma mudança
+AWS_PROFILE=aws_fiap terraform plan
+```
+
+Se o plan mostrar diferenças aceitáveis (ex: adicionar tag `managed-by:terraform`), rode `terraform apply`.
+
+### Alternativa (Sintoma A) — Deletar no painel e recriar
+
+Mais simples, mas gera gap de ~2 min sem alerta ativo:
+
+1. Datadog UI → Monitors → excluir os monitores `[ToggleMaster] <serviço>`
+2. Datadog UI → Integrations → Webhooks → excluir `togglemaster-self-healing`
+3. Rodar workflow **Datadog Terraform — Apply** com `action=apply`
+
+### Sintoma B — `401 Unauthorized`
+
+```text
+Error: error creating/updating monitor: 401 Unauthorized
+```
+
+### Causa (Sintoma B)
+
+Autenticação falhou na API Datadog. Possíveis causas:
+
+1. **App Key errada no SSM** — comum confundir:
+   - **Application Key** (prefixo `ddapp_` ou 40 chars hex) ← correto
+   - **Personal Access Token** (prefixo `ddpat_`) ← errado, não serve
+   - **API Key** (32 chars hex) ← serve pra ingestão, não pra criar recursos
+2. **App Key expirada ou revogada** no painel Datadog
+3. **API Key sem permissão** (menos comum, acontece em contas com RBAC apertado)
+
+### Solução (Sintoma B)
+
+```bash
+# 1. Verificar o tipo de valor no SSM sem expor o segredo
+aws ssm get-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key \
+  --with-decryption --query 'Parameter.Value' --output text \
+  | awk '{printf "primeiros 10: %s... | len: %d\n", substr($0,1,10), length($0)}'
+
+# Esperado: começa com 'ddapp_' E len ~40, OU 40 chars hex sem prefixo
+# Se começar com 'ddpat_' ou tiver 32 chars → está errado, siga pro passo 2
+```
+
+```bash
+# 2. Criar Application Key correta
+# Datadog UI → avatar → Personal Settings → Application Keys → New Key
+# Nome: togglemaster-terraform
+# Copiar o valor
+
+# 3. Gravar no SSM
+read -s DD_APP_KEY   # cola a Application Key, Enter
+aws ssm put-parameter --profile aws_fiap \
+  --name /togglemaster/prod/datadog/app-key \
+  --type SecureString --value "$DD_APP_KEY" --overwrite
+unset DD_APP_KEY
+
+# 4. Validar com curl antes de rodar o workflow
+DD_API_KEY=$(aws ssm get-parameter --profile aws_fiap --name /togglemaster/prod/datadog/api-key --with-decryption --query 'Parameter.Value' --output text)
+DD_APP_KEY=$(aws ssm get-parameter --profile aws_fiap --name /togglemaster/prod/datadog/app-key --with-decryption --query 'Parameter.Value' --output text)
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
+  "https://api.datadoghq.com/api/v1/monitor?page_size=1" \
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY"
+# Esperado: HTTP 200
+```
+
+### Sintoma C — `ParameterNotFound`
+
+```text
+Error: couldn't find resource (/togglemaster/prod/github/webhook-pat)
+```
+
+### Causa e Solução (Sintoma C)
+
+PAT GitHub não foi cadastrado no SSM. Siga `DEPLOY.md` → seção
+**0.3 → PAT do GitHub (para o webhook de self-healing)**.
+
+---
+
+## 21. Application `togglemaster` Degraded com todos os pods Running (HPA sem metrics-server)
+
+### Sintoma
+
+- ArgoCD mostra a Application `togglemaster` como **Degraded**.
+- `kubectl get pods -n togglemaster` mostra os 5 serviços `Running`.
+- `kubectl get hpa -n togglemaster` mostra `TARGETS <unknown>/70%`.
+
+### Causa
+
+A saúde da Application é a pior entre **todos** os recursos que ela gerencia,
+não só os Deployments. Os HPAs do `evaluation-service` e do `analytics-service`
+leem CPU pela API `metrics.k8s.io`, que é implementada pelo **metrics-server**.
+O EKS não instala o metrics-server por padrão, e o Prometheus do
+`kube-prometheus-stack` não substitui essa API. Sem ela, o HPA fica com
+`ScalingActive=False`, e o health check do ArgoCD pra HPA marca **Degraded**.
+
+### Diagnóstico
+
+```bash
+# Quais recursos da Application não estão Healthy
+kubectl get application togglemaster -n argocd -o json \
+  | jq -r '.status.resources[] | select(.health.status != null and .health.status != "Healthy") | "\(.kind)/\(.name) → \(.health.status)"'
+
+# APIService das métricas: NotFound ou AVAILABLE=False confirma o problema
+kubectl get apiservice v1beta1.metrics.k8s.io
+
+# Evento do HPA
+kubectl describe hpa evaluation-service-hpa -n togglemaster | tail -15
+# Procure: FailedGetResourceMetric / unable to get metrics
+```
+
+### Solução
+
+**Já corrigido no repo:** o metrics-server (chart 3.14.0) é instalado pela
+Application `k8s/observability/applications/metrics-server.yaml`, aplicada
+pelo workflow **Observability Deploy**. Se o problema aparecer:
+
+1. Confirme que a Application `metrics-server` existe e está `Synced + Healthy`:
+   ```bash
+   kubectl get application metrics-server -n argocd
+   ```
+2. Se não existir, rode de novo o workflow **Observability Deploy**.
+3. Se existir mas a APIService não ficar disponível, veja os logs:
+   ```bash
+   kubectl logs -n kube-system deploy/metrics-server --tail=30
+   ```
+   - `x509: cannot validate certificate` → adicionar `args: [--kubelet-insecure-tls]`
+     nos values da Application.
+   - `FailedDiscoveryCheck` na APIService → o Security Group dos nodes precisa
+     liberar a porta 10250 vinda do control plane do EKS.
+
+Depois que a APIService fica `Available`, os HPAs leem métricas em ~1 min e a
+Application volta pra **Healthy**. Pra acelerar:
+
+```bash
+kubectl -n argocd annotate application togglemaster \
+  argocd.argoproj.io/refresh=hard --overwrite
+```
 
 ---
 

@@ -12,8 +12,11 @@ Nada é aplicado manualmente: o ArgoCD sincroniza os Helm charts diretamente dos
 | **Loki** | chart `loki-stack` | Centralização e indexação dos logs | 1 |
 | **Promtail** | chart `loki-stack` | DaemonSet que coleta logs dos contêineres e envia ao Loki | 1 |
 | **OTel Collector** | chart `opentelemetry-collector` (contrib) | Peça central: recebe OTLP e roteia para Prometheus e Datadog | 2 |
+| **metrics-server** | chart `metrics-server` 3.14.0 | API `metrics.k8s.io` (CPU/memória) consumida pelos HPAs | infra |
 
-Tudo roda no namespace `observability`.
+Tudo roda no namespace `observability`, exceto o **metrics-server**, que roda
+em `kube-system` (namespace padrão dele, por registrar a APIService de cluster
+`v1beta1.metrics.k8s.io`).
 
 ## Arquitetura GitOps (App of Apps)
 
@@ -24,9 +27,16 @@ app-of-apps.yaml  (Application pai, aplicada no bootstrap via envsubst)
               ├── kube-prometheus-stack.yaml   → Helm: Prometheus + Grafana
               ├── loki-stack.yaml              → Helm: Loki + Promtail
               ├── otel-collector.yaml          → Helm: OTel Collector (contrib)
+              ├── metrics-server.yaml          → Helm: metrics-server (kube-system)
               └── grafana-config.yaml          → ConfigMaps (datasource Loki + dashboard)
 ```
 
+- ⚠️ **A pasta `applications/` só pode conter recursos do tipo `Application`.**
+  Ela é lida pelo App-of-Apps, que aplica tudo de uma vez. Um recurso de outro
+  tipo cujo CRD ainda não existe (ex: `ServiceMonitor`, que só passa a existir
+  depois que o `kube-prometheus-stack` é instalado) faz o sync inteiro falhar e
+  **nenhuma Application filha é criada**. Recursos desse tipo vão em `grafana/`
+  (aplicados pela Application `grafana-config`, depois do CRD existir).
 - As Applications de Helm apontam **direto** para os repositórios de charts oficiais —
   sem renderizar, o ArgoCD resolve o Helm.
 - O `grafana-config` aplica os manifests da pasta `grafana/` (datasource do Loki e o
@@ -66,6 +76,15 @@ app-of-apps.yaml  (Application pai, aplicada no bootstrap via envsubst)
 - `traces` → Datadog
 - `metrics` → Datadog + Prometheus (via scrape em `:8889`)
 - `logs` → Datadog (logs estruturados da aplicação; logs de container ficam com o Promtail)
+
+> **Nota sobre o scrape na porta `:8889`:** o chart `opentelemetry-collector`
+> cria um ServiceMonitor por default apontando pra porta `metrics` (8888),
+> que é a de métricas INTERNAS do próprio Collector — e que foi desabilitada
+> no OTel Collector v0.123+ (`service.telemetry.metrics.address` removida).
+> Pra o Prometheus efetivamente scrapear as métricas das apps (expostas na
+> porta `prometheus` = 8889 pelo exporter `prometheus`), o values do chart
+> inclui `serviceMonitor.extraPortsScrapeMonitors` com a porta 8889.
+> Sem isso, o dashboard "Requisições HTTP por serviço" do Grafana fica vazio.
 
 ## Dashboard customizado
 
@@ -187,4 +206,4 @@ kubectl port-forward -n observability svc/kube-prometheus-stack-grafana 3000:80
 ## Próximos blocos
 
 - **Bloco 3** — Instrumentação OTel dos 5 microsserviços no `togglemaster-app`.
-- **Bloco 4** — Alertas (5xx > 5%) + OpsGenie + Discord + Self-Healing.
+- **Bloco 4** — Alertas (5xx > 5%) + Jira Service Management + Slack + Self-Healing.
