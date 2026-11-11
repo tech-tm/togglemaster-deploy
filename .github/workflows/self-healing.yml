@@ -7,6 +7,7 @@ name: Self-Healing Rollout
 #   Datadog Monitor dispara -> webhook @webhook-togglemaster-self-healing
 #   -> GitHub repository_dispatch (event_type: datadog-alert)
 #   -> este workflow faz 'kubectl rollout restart' no servico afetado.
+#      (antes, se o deployment estiver com 0 replicas, faz 'kubectl scale --replicas=1').
 #
 # Payload esperado do Datadog (configurado no webhook):
 #   {
@@ -125,6 +126,21 @@ jobs:
           echo "--- Pods ---"
           kubectl get pods -n "$NAMESPACE" -l app="${SVC%-service}" -o wide
 
+      - name: Garantir réplicas mínimas
+        id: scale
+        run: |
+          SVC="${{ steps.ctx.outputs.service }}"
+          REPLICAS=$(kubectl get deployment "$SVC" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+          echo "Réplicas atuais de '$SVC': ${REPLICAS:-0}"
+          if [ "${REPLICAS:-0}" -lt 1 ]; then
+            echo "Deployment escalado para 0 -> voltando para 1 réplica..."
+            kubectl scale deployment "$SVC" -n "$NAMESPACE" --replicas=1
+            echo "scaled=true" >> $GITHUB_OUTPUT
+          else
+            echo "Réplicas OK, nada a escalar."
+            echo "scaled=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Rollout restart
         id: restart
         run: |
@@ -167,10 +183,12 @@ jobs:
           | Alerta | ${{ steps.ctx.outputs.alert_name }} |
           | URL do alerta | ${{ steps.ctx.outputs.alert_url }} |
           | Reiniciado em | ${{ steps.restart.outputs.restarted_at }} |
+          | Escalado de 0 para 1 | ${{ steps.scale.outputs.scaled }} |
           | Status do rollout | $STATUS |
 
           ## Ação executada
           \`\`\`
+          kubectl scale deployment $SVC -n $NAMESPACE --replicas=1   # só se replicas=0
           kubectl rollout restart deployment $SVC -n $NAMESPACE
           \`\`\`
 
