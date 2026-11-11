@@ -690,10 +690,12 @@ Dentro de **~5 min**, observe:
 2. **JSM Operations** abre um alerta (visível em **Operations** → **Alerts** do JSM).
 3. **Slack** canal `#alerts` recebe notificação (via integração JSM).
 4. **GitHub Actions** → `togglemaster-deploy` → workflow **Self-Healing Rollout** roda.
-5. O workflow executa `kubectl rollout restart deployment/auth-service`.
+5. O workflow vê que o `auth-service` está com 0 réplicas, faz `kubectl scale --replicas=1` e em seguida `kubectl rollout restart`. O pod volta sozinho.
 
-> Com `replicas=0` o `rollout restart` roda, mas não cria pod. O `auth-service`
-> só volta no passo **7.4**.
+> O `rollout restart` sozinho não cria pod quando `replicas=0`, porque ele
+> mantém o número de réplicas. Por isso o workflow escala para 1 antes.
+> O `flag-service` também pode alarmar e reiniciar junto (efeito cascata, ele
+> depende do auth). Isso é esperado.
 
 ### 7.3 Prints obrigatórios (relatório PDF)
 
@@ -703,7 +705,7 @@ Capture durante o passo 7.2:
 - [ ] Datadog APM → Service Map com os 5 serviços.
 - [ ] Datadog APM → Trace distribuído de uma chamada `/evaluate`.
 - [ ] Slack `#alerts` com a notificação do incidente (vinda do JSM).
-- [ ] GitHub Actions → run do **Self-Healing Rollout** → log do `kubectl rollout restart`.
+- [ ] GitHub Actions → run do **Self-Healing Rollout** → log do `kubectl scale` + `kubectl rollout restart`.
 
 ### 7.4 Restaurar
 
@@ -711,10 +713,11 @@ Devolve o `auth-service` e **reativa o `selfHeal`** (não esqueça, senão o Arg
 deixa de se autocorrigir):
 
 ```bash
-kubectl scale deployment auth-service -n togglemaster --replicas=1
-
 kubectl -n argocd patch application togglemaster --type merge \
   -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":true}}}}'
+
+# só se o workflow não tiver restaurado
+kubectl scale deployment auth-service -n togglemaster --replicas=1
 ```
 
 Confira: `kubectl get pods -n togglemaster -l app=auth` deve mostrar `1/1 Running`.
